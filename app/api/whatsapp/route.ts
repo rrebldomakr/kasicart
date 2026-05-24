@@ -48,7 +48,7 @@ export async function POST(request: Request) {
     const { data: vendor } = await supabase.from('vendors').select('id').eq('slug', 'nenes').single();
     if (!vendor) return new Response('Vendor mismatch', { status: 500 });
 
-    // Grab customer profile row
+    // Look up the customer profile record
     let { data: profile } = await supabase
       .from('customer_profiles')
       .select('*')
@@ -59,9 +59,9 @@ export async function POST(request: Request) {
     // LAYER A: ONBOARDING REGISTRATION PIPELINE
     // ==========================================
     
-    // STEP 1: New customer record bootstrapping phase
+    // STEP 1: If no profile exists, create a baseline record in the 'awaiting_name' state
     if (!profile) {
-      console.log(`🆕 NO ACCOUNT FOUND -> Creating base profile wrapper for: ${cleanedPhone}`);
+      console.log(`🆕 NO PROFILE FOUND -> Initializing baseline row for number: ${cleanedPhone}`);
       
       const { data: newProfile } = await supabase
         .from('customer_profiles')
@@ -82,16 +82,16 @@ export async function POST(request: Request) {
       return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
     }
 
-    // STEP 2: Handle the active name string capture step
+    // STEP 2: Catch their text reply, save it as their name, and break the onboarding loop completely
     if (profile.customer_name === 'AWAITING_NAME_STAGE' || profile.current_state === 'awaiting_name') {
       const chosenName = actionTrigger;
-      console.log(`📝 CAPTURING DIRECT NAME STRING -> Updating user record to: "${chosenName}"`);
+      console.log(`📝 PROFILE FOUND IN REGISTRATION MODE -> Overwriting name to: "${chosenName}"`);
 
       const { data: updatedProfile } = await supabase
         .from('customer_profiles')
         .update({
           customer_name: chosenName,
-          current_state: 'browsing' // Moves state flag out of onboarding loop permanently
+          current_state: 'browsing' // Shift state to browsing permanently
         })
         .eq('id', profile.id)
         .select()
@@ -99,8 +99,11 @@ export async function POST(request: Request) {
 
       profile = updatedProfile;
 
-      await sendTextMessage(incomingPhone, `✨ Sho, ${chosenName}! Profile saved permanently. You've scored 5 Loyalty Points! 🎉`);
-      await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
+      // Send a plain text confirmation instead of a template to open the Twilio interactive channel safely
+      await sendTextMessage(
+        incomingPhone, 
+        `✨ Sho, ${chosenName}! Your profile is saved permanently. You've scored 5 Loyalty Points! 🎉\n\nTo view the interactive food menu, just reply with the word *'menu'* right now!`
+      );
 
       return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
     }
@@ -207,7 +210,7 @@ async function sendTwilioButtonTemplate(to: string, templateSid: string) {
       body: params
     });
   } catch (e) {
-    console.error("❌ TWILIO ROUTING EXCEPTION (Button request failed):", e);
+    console.error("❌ TWILIO ROUTING EXCEPTION (Button template fetch failed):", e);
   }
 }
 
@@ -227,6 +230,6 @@ async function sendTextMessage(to: string, text: string) {
       body: params
     });
   } catch (e) {
-    console.error("❌ TWILIO ROUTING EXCEPTION (Text request failed):", e);
+    console.error("❌ TWILIO ROUTING EXCEPTION (Plain text fetch failed):", e);
   }
 }
