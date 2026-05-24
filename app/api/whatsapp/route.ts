@@ -55,6 +55,7 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (!profile) {
+      console.log(`🆕 AUTOMATIC REGISTRATION -> Provisioning row card for: ${cleanedPhone}`);
       const { data: newProfile } = await supabase
         .from('customer_profiles')
         .upsert({
@@ -109,12 +110,12 @@ export async function POST(request: Request) {
 
       await supabase.from('customer_profiles').update({ temp_cart_json: currentCart }).eq('phone_number', cleanedPhone);
       
-      // Safe fallback line notification strategy
-      await sendTextMessage(incomingPhone, ` added *${itemName}* (R${itemPrice}) straight into your shopping basket layout profile!`);
+      // Clean, un-broken text string confirmation message template notification
+      await sendTextMessage(incomingPhone, `Added *${itemName}* (R${itemPrice}) straight into your shopping basket! 🛒`);
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_CART_SID);
     } 
 
-    // Checkout Confirmation -> Directly files the ticket live to your kitchen monitor
+    // Checkout Confirmation
     else if (actionTrigger === 'CHECKOUT_CONFIRM') {
       const finalCart = profile.temp_cart_json || [];
 
@@ -138,7 +139,7 @@ export async function POST(request: Request) {
       );
     } 
 
-    // Global reset fallback command handler
+    // Global reset handler
     else {
       await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('phone_number', cleanedPhone);
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
