@@ -48,7 +48,6 @@ export async function POST(request: Request) {
     const { data: vendor } = await supabase.from('vendors').select('id').eq('slug', 'nenes').single();
     if (!vendor) return new Response('Vendor mismatch', { status: 500 });
 
-    // Profile retrieval/safe auto-upsert wrapper
     let { data: profile } = await supabase
       .from('customer_profiles')
       .select('*')
@@ -56,7 +55,6 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (!profile) {
-      console.log(`🆕 AUTOMATIC REGISTRATION -> Provisioning row card for: ${cleanedPhone}`);
       const { data: newProfile } = await supabase
         .from('customer_profiles')
         .upsert({
@@ -71,11 +69,10 @@ export async function POST(request: Request) {
     }
 
     // ==========================================
-    // BUTTON ACTIONS ENGINE ROUTER
+    // SYSTEM ROUTER (BUTTON INTERACTIONS ONLY)
     // ==========================================
-    console.log(`🕹️ EVALUATING KEY SWITCH -> "${actionTrigger}"`);
+    console.log(`🕹️ ACTION ENGINE -> Key Match: "${actionTrigger}"`);
 
-    // Category Navigation Streams
     if (actionTrigger === 'CAT_ALMIGHTY') {
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_ALMIGHTY_SID);
     } 
@@ -86,7 +83,7 @@ export async function POST(request: Request) {
       await sendTwilioButtonTemplate(incomingPhone, TWILIO_DRINKS_SID);
     } 
 
-    // Specific Item Order Processing
+    // Item Selection Add-to-Cart Router
     else if (
       actionTrigger === 'ITEM_SPECIAL' || 
       actionTrigger === 'ITEM_FULLHOUSE' || 
@@ -111,10 +108,13 @@ export async function POST(request: Request) {
       currentCart.push({ name: itemName, qty: 1, price: itemPrice });
 
       await supabase.from('customer_profiles').update({ temp_cart_json: currentCart }).eq('phone_number', cleanedPhone);
+      
+      // Safe fallback line notification strategy
+      await sendTextMessage(incomingPhone, ` added *${itemName}* (R${itemPrice}) straight into your shopping basket layout profile!`);
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_CART_SID);
     } 
 
-    // Checkout Trigger Phase -> Directly files to the live dashboard monitor screen panel
+    // Checkout Confirmation -> Directly files the ticket live to your kitchen monitor
     else if (actionTrigger === 'CHECKOUT_CONFIRM') {
       const finalCart = profile.temp_cart_json || [];
 
@@ -125,7 +125,7 @@ export async function POST(request: Request) {
 
       await supabase.from('orders').insert({
         vendor_id: vendor.id,
-        customer_phone: cleanedPhone, // Pure tracking identity validation
+        customer_phone: cleanedPhone, 
         status: 'incoming',
         items_json: finalCart
       });
@@ -134,17 +134,13 @@ export async function POST(request: Request) {
 
       await sendTextMessage(
         incomingPhone, 
-        `🚀 ORDER FILED SUCCESSFULLY!\n\nYour menu selections just flew straight onto Nenes Street Kitchen monitor board dashboard monitor screen.\n\nKeep this chat thread open—we will drop an alert here the exact second your meal hits the roaring grill! 🔥🍟`
+        `🚀 ORDER FILED SUCCESSFULLY!\n\nYour menu selections just landed straight onto the chef's dashboard monitor screen.\n\nKeep this chat thread open—we will drop an alert here the exact second your meal hits the grill! 🔥🍟`
       );
     } 
 
-    // Reset fallback handling routines
-    else if (actionTrigger === 'CLEAR_CART' || actionTrigger === 'GO_BACK' || actionTrigger.toLowerCase() === 'menu' || actionTrigger.toLowerCase() === 'hi') {
-      await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('phone_number', cleanedPhone);
-      await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
-    } 
-    
+    // Global reset fallback command handler
     else {
+      await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('phone_number', cleanedPhone);
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
     }
 
@@ -175,7 +171,7 @@ async function sendTwilioButtonTemplate(to: string, templateSid: string) {
       body: params
     });
   } catch (e) {
-    console.error("❌ Template delivery failed:", e);
+    console.error("❌ Template send crash:", e);
   }
 }
 
@@ -195,6 +191,6 @@ async function sendTextMessage(to: string, text: string) {
       body: params
     });
   } catch (e) {
-    console.error("❌ Text string delivery failed:", e);
+    console.error("❌ Text send crash:", e);
   }
 }
