@@ -1,15 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Fallback to empty strings if the environment variables aren't loaded yet during build time
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const SUPABASE_URL = 'https://ctnmiwmiymzhsafwxnxw.supabase.co';
+const SUPABASE_SERVICE_ROLE_KEY = 'sb_secret_E9cG98_wCYNPlKom7NcJ9w__5OD1vGw';
 
-// Prevent the app from crashing if variables are missing, print a clear message instead
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('⚠️ Supabase environment variables are missing in .env.local');
-}
-
-export const supabase = createClient(
-  supabaseUrl || 'https://placeholder.supabase.co', 
-  supabaseAnonKey || 'placeholder'
-);
+export const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
