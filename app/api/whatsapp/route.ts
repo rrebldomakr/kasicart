@@ -48,7 +48,7 @@ export async function POST(request: Request) {
     const { data: vendor } = await supabase.from('vendors').select('id').eq('slug', 'nenes').single();
     if (!vendor) return new Response('Vendor mismatch', { status: 500 });
 
-    // 1. Profile Retrieval / Safe Auto-Upsert
+    // Profile retrieval/safe bootstrap wrapper
     let { data: profile } = await supabase
       .from('customer_profiles')
       .select('*')
@@ -56,12 +56,12 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (!profile) {
-      console.log(`🆕 NEW NUMBER -> Silently bootstrapping profile row for: ${cleanedPhone}`);
       const { data: newProfile } = await supabase
         .from('customer_profiles')
         .upsert({
           phone_number: cleanedPhone,
           customer_name: 'Kasi Customer',
+          current_state: 'browsing',
           loyalty_points: 5
         }, { onConflict: 'phone_number' })
         .select()
@@ -71,11 +71,43 @@ export async function POST(request: Request) {
     }
 
     // ==========================================
-    // ACTIONS CORE ROUTER
+    // INTERCEPTOR: MID-CHECKOUT NAME COLLECTION
+    // ==========================================
+    if (profile.current_state === 'awaiting_checkout_name') {
+      const customerNameInput = actionTrigger;
+      console.log(`📝 MID-CHECKOUT NAME CAPTURED -> Saving name: "${customerNameInput}" for order filing`);
+
+      const finalCart = profile.temp_cart_json || [];
+
+      // 1. Stream the final transactional order ticket card directly onto the chef live dash monitor
+      await supabase.from('orders').insert({
+        vendor_id: vendor.id,
+        customer_phone: customerNameInput, // Saved under their real inputted tracking name
+        status: 'incoming',
+        items_json: finalCart
+      });
+
+      // 2. Reset customer state metrics and clean out the temporary json columns
+      await supabase.from('customer_profiles').update({ 
+        customer_name: customerNameInput,
+        temp_cart_json: null,
+        current_state: 'browsing' 
+      }).eq('phone_number', cleanedPhone);
+
+      await sendTextMessage(
+        incomingPhone, 
+        `🚀 WE FILING IT, ${customerNameInput.toUpperCase()}!\n\nYour order just flew straight onto Nenes Street Kitchen monitor board dashboard monitor screen.\n\nKeep this chat open—we will drop an alert here the exact second your meal hits the roaring grill! 🔥🍟`
+      );
+
+      return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
+    }
+
+    // ==========================================
+    // ACTIONS SYSTEM CORE ROUTER
     // ==========================================
     console.log(`🕹️ ACTION ENGINE -> Processing key: "${actionTrigger}"`);
 
-    // Category Navigation Links
+    // Category Navigation Streams
     if (actionTrigger === 'CAT_ALMIGHTY') {
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_ALMIGHTY_SID);
     } 
@@ -86,7 +118,7 @@ export async function POST(request: Request) {
       await sendTwilioButtonTemplate(incomingPhone, TWILIO_DRINKS_SID);
     } 
 
-    // Food Item Selection Array Processor
+    // Specific Item Order Processing
     else if (
       actionTrigger === 'ITEM_SPECIAL' || 
       actionTrigger === 'ITEM_FULLHOUSE' || 
@@ -111,36 +143,37 @@ export async function POST(request: Request) {
       currentCart.push({ name: itemName, qty: 1, price: itemPrice });
 
       await supabase.from('customer_profiles').update({ temp_cart_json: currentCart }).eq('phone_number', cleanedPhone);
+      
+      // Deliver the cart selection buttons review page template layout
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_CART_SID);
     } 
 
-    // Final Checkout Stream Execution
+    // Checkout Confirmation Trigger (User clicks Checkout Now button component)
     else if (actionTrigger === 'CHECKOUT_CONFIRM') {
-      const finalCart = profile.temp_cart_json || [];
+      const checkCart = profile.temp_cart_json || [];
 
-      if (finalCart.length === 0) {
+      if (checkCart.length === 0) {
+        await sendTextMessage(incomingPhone, `⚠️ Your cart is currently empty! Pick some food from the selections first.`);
         await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
         return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
       }
 
-      await supabase.from('orders').insert({
-        vendor_id: vendor.id,
-        customer_phone: cleanedPhone, 
-        status: 'incoming',
-        items_json: finalCart
-      });
-
-      await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('phone_number', cleanedPhone);
+      // Instead of locking execution, update state to expect a name string reply text input next
+      await supabase.from('customer_profiles').update({ current_state: 'awaiting_checkout_name' }).eq('phone_number', cleanedPhone);
 
       await sendTextMessage(
         incomingPhone, 
-        `🚀 WE FILING IT!\n\nYour order just flew straight onto the chef's dashboard monitor screen.\n\nKeep this chat open—we will drop an alert here the exact second your meal hits the grill! 🔥🍟`
+        `🛒 Sweet, meals added successfully!\n\nWho is this order for? Just reply with your name right now so the chefs know who to call when it's sizzling hot! 👇`
       );
     } 
 
-    // Default Fallback: If they text 'hi', 'menu', or anything unrecognized, drop the core sections menu buttons
+    // Fallback Reset Commands
+    else if (actionTrigger === 'CLEAR_CART' || actionTrigger === 'GO_BACK' || actionTrigger.toLowerCase() === 'menu' || actionTrigger.toLowerCase() === 'hi') {
+      await supabase.from('customer_profiles').update({ temp_cart_json: null, current_state: 'browsing' }).eq('phone_number', cleanedPhone);
+      await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
+    } 
+    
     else {
-      await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('phone_number', cleanedPhone);
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
     }
 
