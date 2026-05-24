@@ -4,8 +4,8 @@ import { supabase } from '../../utils/supabase';
 // ==========================================
 // PASTE YOUR TWILIO CREDENTIALS HERE
 // ==========================================
-const TWILIO_ACCOUNT_SID = 'ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
-const TWILIO_AUTH_TOKEN = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+const TWILIO_ACCOUNT_SID = 'ACbf08959dc99af94412f4038dbebe6113';
+const TWILIO_AUTH_TOKEN = '827dffa937dcb6f83e91264220c38f5b';
 const TWILIO_PHONE_NUMBER = '+14155238886'; 
 
 // ==========================================
