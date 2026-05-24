@@ -2,10 +2,10 @@ import { NextResponse } from 'next/server';
 import { supabase } from '../../utils/supabase';
 
 // ==========================================
-// UNIFIED LOCAL ACCESS CREDENTIALS
+// UNIFIED LOCAL ACCESS CREDENTIALS (VERIFIED)
 // ==========================================
 const TWILIO_ACCOUNT_SID  = 'ACbf08959dc99af94412f4038dbebe6113';
-const TWILIO_AUTH_TOKEN   = '827dffa937dcb6f83e91264220c38f5b';
+const TWILIO_AUTH_TOKEN   = '12ce467c7b80172fc94c9c7c5f9c1967'; // Your real active token pasted live
 const TWILIO_PHONE_NUMBER = '+14155238886'; 
 
 // ==========================================
@@ -86,7 +86,6 @@ export async function POST(request: Request) {
 
         if (upsertError) {
           console.error("❌ DATABASE WRITE REJECTED BY SCHEMA:", upsertError.message);
-          // Fallback bypass: handle transmission delivery even if table constraints hit a wall
         }
         
         profile = newProfile;
