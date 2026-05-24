@@ -2,10 +2,10 @@ import { NextResponse } from 'next/server';
 import { supabase } from '../../utils/supabase';
 
 // ==========================================
-// UNIFIED LOCAL ACCESS CREDENTIALS (VERIFIED)
+// UNIFIED LOCAL ACCESS CREDENTIALS
 // ==========================================
 const TWILIO_ACCOUNT_SID  = 'ACbf08959dc99af94412f4038dbebe6113';
-const TWILIO_AUTH_TOKEN   = '12ce467c7b80172fc94c9c7c5f9c1967'; // Your real active token pasted live
+const TWILIO_AUTH_TOKEN   = '12ce467c7b80172fc94c9c7c5f9c1967'; 
 const TWILIO_PHONE_NUMBER = '+14155238886'; 
 
 // ==========================================
@@ -25,7 +25,6 @@ export async function POST(request: Request) {
 
     const contentType = request.headers.get('content-type') || '';
 
-    // EXTRACT PHASE: Parse inbound web data streaming directly out of Twilio's live webhook form
     if (contentType.includes('application/json')) {
       const body = await request.json();
       incomingPhone = body.phone || '';
@@ -37,25 +36,19 @@ export async function POST(request: Request) {
       buttonPayload = formData.get('ButtonPayload')?.toString() || '';
     }
 
-    // High-visibility log to tracking pipeline activity
     console.log(`📥 INBOUND WEBHOOK EXECUTION START -> Phone: ${incomingPhone}, Msg: ${incomingMessage}, Payload: ${buttonPayload}`);
 
     if (!incomingPhone || !incomingMessage) {
       return new Response('Missing transmission payloads', { status: 400 });
     }
 
-    // NORMALIZATION PHASE: Strip out formatting and non-numeric artifacts to create clean matching keys
     const cleanedPhone = incomingPhone.replace('whatsapp:', '').replace(/\D/g, '').trim();
     const actionTrigger = buttonPayload || incomingMessage.trim();
 
-    // VENDOR VERIFICATION: Establish presence tracking link for the destination storefront profile
     const { data: vendor } = await supabase.from('vendors').select('id').eq('slug', 'nenes').single();
-    if (!vendor) {
-      console.error("❌ ROUTE STOPPED: Vendor verification context model matching 'nenes' not located.");
-      return new Response('Vendor mismatch', { status: 500 });
-    }
+    if (!vendor) return new Response('Vendor mismatch', { status: 500 });
 
-    // PROFILE ACQUISITION: Pull user account details straight out of your live data rows
+    // Look up user profile details
     let { data: profile } = await supabase
       .from('customer_profiles')
       .select('*')
@@ -63,69 +56,49 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     // ==========================================
-    // STATE LAYER A: ONBOARDING PIPELINE
+    // LAYER A: ONBOARDING REGISTRATION PIPELINE
     // ==========================================
     
-    // CONDITION 1: User does not exist, or exists with a default unconfigured state marker
-    if (!profile || profile.customer_name === 'Pending' || profile.customer_name === 'Pending Registration') {
+    // STEP 1: New phone number hits the bot for the first time
+    if (!profile) {
+      console.log(`🆕 ACCOUNT MISSING -> Creating record in awaiting_name state for: ${cleanedPhone}`);
       
-      // If no profile object is present in local runtime memory, safely bootstrap a basic registration row
-      if (!profile) {
-        console.log(`🆕 ACCOUNT MISSING -> Compiling safe profile record wrapper for number: ${cleanedPhone}`);
-        
-        // UPSERT ENGINE: Prevents schema 400 crashes by safely matching matching rows or applying absolute defaults
-        const { data: newProfile, error: upsertError } = await supabase
-          .from('customer_profiles')
-          .upsert({
-            phone_number: cleanedPhone,
-            customer_name: 'Pending Registration',
-            loyalty_points: 0
-          }, { onConflict: 'phone_number' })
-          .select()
-          .maybeSingle();
+      const { data: newProfile } = await supabase
+        .from('customer_profiles')
+        .upsert({
+          phone_number: cleanedPhone,
+          customer_name: 'New Customer',
+          current_state: 'awaiting_name',
+          loyalty_points: 5
+        }, { onConflict: 'phone_number' })
+        .select()
+        .single();
 
-        if (upsertError) {
-          console.error("❌ DATABASE WRITE REJECTED BY SCHEMA:", upsertError.message);
-        }
-        
-        profile = newProfile;
-      }
+      await sendTextMessage(
+        incomingPhone, 
+        `🇿🇦 Yo! Welcome to KasiCart // Nenes Street Kitchen!\n\nWe don't have your number registered yet.\n\nWhat should the chefs call you? Just reply with your name right now! 👇`
+      );
 
-      // If they sent a system greeting text, fire the clean onboarding question block back to their screen
-      if (actionTrigger.toLowerCase() === 'hi' || actionTrigger.toLowerCase() === 'menu' || !profile || profile.customer_name === 'Pending Registration') {
-        console.log(`💬 Dispatching name intake interface payload to client screen...`);
-        
-        await sendTextMessage(
-          incomingPhone, 
-          `🇿🇦 Yo! Welcome to KasiCart // Nenes Street Kitchen!\n\nWe don't have your number registered yet.\n\nWhat should the chefs call you? Just reply with your name right now! 👇`
-        );
+      return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
+    }
 
-        // Update name placeholder tracker state to prevent re-triggering this prompt
-        if (profile) {
-          await supabase.from('customer_profiles').update({ customer_name: 'Pending' }).eq('id', profile.id);
-        }
-
-        return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
-      }
-
-      // CONDITION 2: If their name tracker is set to 'Pending', whatever text string they type next becomes their saved name
+    // STEP 2: User profile exists and their current state machine is locked to 'awaiting_name'
+    if (profile.current_state === 'awaiting_name') {
       const chosenName = actionTrigger;
-      console.log(`📝 CAPTURING INBOUND STRING TEXT -> Processing clean name change update: "${chosenName}"`);
+      console.log(`📝 CAPTURING INBOUND NAME TEXT -> Setting name value to: "${chosenName}"`);
 
-      const { data: activatedProfile } = await supabase
+      const { data: updatedProfile } = await supabase
         .from('customer_profiles')
         .update({
-          customer_name: chosenName
+          customer_name: chosenName,
+          current_state: 'browsing' // Moves state out of registration loop permanently
         })
-        .eq('phone_number', cleanedPhone)
+        .eq('id', profile.id)
         .select()
-        .maybeSingle();
+        .single();
 
-      if (activatedProfile) {
-        profile = activatedProfile;
-      }
+      profile = updatedProfile;
 
-      // Confirm their registration changes live, and push the interactive layout buttons straight to their phone
       await sendTextMessage(incomingPhone, `✨ Sho, ${chosenName}! Profile saved permanently. You've scored 5 Loyalty Points! 🎉`);
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
 
@@ -133,11 +106,10 @@ export async function POST(request: Request) {
     }
 
     // ==========================================
-    // STATE LAYER B: INTERACTIVE BUTTON NAVIGATION ROUTER
+    // LAYER B: INTERACTIVE BUTTON NAVIGATION ROUTER
     // ==========================================
     console.log(`🕹️ EVALUATING INTERACTIVE PAYLOAD KEY -> "${actionTrigger}" for customer: ${profile.customer_name}`);
 
-    // Core Section Category Links
     if (actionTrigger === 'CAT_ALMIGHTY') {
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_ALMIGHTY_SID);
     } 
@@ -148,7 +120,6 @@ export async function POST(request: Request) {
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_DRINKS_SID);
     } 
 
-    // Specific Item Selection / Cart Insertion Array Processor
     else if (
       actionTrigger === 'ITEM_SPECIAL' || 
       actionTrigger === 'ITEM_FULLHOUSE' || 
@@ -169,17 +140,13 @@ export async function POST(request: Request) {
         case 'ITEM_STONEY':    itemName = 'Stoney Ginger Beer';    itemPrice = 18.00; break;
       }
 
-      // Append new items into the temporary json column array storage record
       const currentCart = profile.temp_cart_json || [];
       currentCart.push({ name: itemName, qty: 1, price: itemPrice });
 
       await supabase.from('customer_profiles').update({ temp_cart_json: currentCart }).eq('id', profile.id);
-      
-      // Dispatch the Cart Review action templates out
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_CART_SID);
     } 
 
-    // Final Transaction Execution -> Streams data directly to your live kitchen board monitor screen
     else if (actionTrigger === 'CHECKOUT_CONFIRM') {
       const finalCart = profile.temp_cart_json || [];
 
@@ -189,7 +156,6 @@ export async function POST(request: Request) {
         return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
       }
 
-      // Insert transactional data array card onto the chef dashboard pipeline streaming interface
       await supabase.from('orders').insert({
         vendor_id: vendor.id,
         customer_phone: profile.customer_name, 
@@ -197,7 +163,6 @@ export async function POST(request: Request) {
         items_json: finalCart
       });
 
-      // Completely clear out cart data storage space columns for future sessions
       await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('id', profile.id);
 
       await sendTextMessage(
@@ -206,14 +171,12 @@ export async function POST(request: Request) {
       );
     } 
 
-    // System Reset Handlers (Clear commands, cancellation actions, navigation loops)
     else if (actionTrigger === 'CLEAR_CART' || actionTrigger === 'GO_BACK' || actionTrigger.toLowerCase() === 'menu' || actionTrigger.toLowerCase() === 'hi') {
       await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('id', profile.id);
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
     } 
     
     else {
-      // Fallback loop safety trap
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
     }
 
@@ -228,7 +191,6 @@ export async function POST(request: Request) {
   }
 }
 
-// NETWORK TRANSLATOR: Sends structured quick-reply template components using Fetch API to Twilio
 async function sendTwilioButtonTemplate(to: string, templateSid: string) {
   try {
     const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
@@ -241,21 +203,14 @@ async function sendTwilioButtonTemplate(to: string, templateSid: string) {
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
+      headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params
     });
-
-    const outputLog = await response.json();
-    console.log(`📡 Twilio Template Delivery Attempt Status: [${response.status}]`, JSON.stringify(outputLog));
   } catch (e) {
     console.error("❌ PIPELINE REJECTION ERROR (sendTwilioButtonTemplate executed with invalid response):", e);
   }
 }
 
-// NETWORK TRANSLATOR: Sends standard message strings using Fetch API to Twilio
 async function sendTextMessage(to: string, text: string) {
   try {
     const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
@@ -268,15 +223,9 @@ async function sendTextMessage(to: string, text: string) {
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
+      headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params
     });
-
-    const outputLog = await response.json();
-    console.log(`📡 Twilio Text String Delivery Attempt Status: [${response.status}]`, JSON.stringify(outputLog));
   } catch (e) {
     console.error("❌ PIPELINE REJECTION ERROR (sendTextMessage executed with invalid response):", e);
   }
