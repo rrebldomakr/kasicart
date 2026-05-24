@@ -2,14 +2,14 @@ import { NextResponse } from 'next/server';
 import { supabase } from '../../utils/supabase';
 
 // ==========================================
-// UNIFIED SANDBOX SYSTEM CREDENTIALS
+// HARDCODED SANDBOX SYSTEM CREDENTIALS
 // ==========================================
 const TWILIO_ACCOUNT_SID  = 'ACbf08959dc99af94412f4038dbebe6113';
 const TWILIO_AUTH_TOKEN   = '827dffa937dcb6f83e91264220c38f5b';
 const TWILIO_PHONE_NUMBER = '+14155238886'; 
 
 // ==========================================
-// PRODUCTION TWILIO TEMPLATE REGISTER
+// ACTIVE TWILIO BUTTON TEMPLATE CONFIGS
 // ==========================================
 const TEMPLATE_SECTIONS_SID = 'HX7bbe21cebedde5b2128187d4a56f0c88';
 const TEMPLATE_ALMIGHTY_SID = 'HXb178629ebc0d15513ff1e561a9e5d173';
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
 
     const contentType = request.headers.get('content-type') || '';
 
-    // 1. Parse inbound payloads safely from Twilio webhook
+    // Extract values out of the inbound Twilio web form data payload
     if (contentType.includes('application/json')) {
       const body = await request.json();
       incomingPhone = body.phone || '';
@@ -37,15 +37,25 @@ export async function POST(request: Request) {
       buttonPayload = formData.get('ButtonPayload')?.toString() || '';
     }
 
-    // Normalization phase: Strip out the 'whatsapp:' prefix and keep naked numbers
+    // High-visibility debugging tracker log
+    console.log(`📥 INBOUND WEBHOOK RECEIVED -> Phone: ${incomingPhone}, Msg: ${incomingMessage}, Payload: ${buttonPayload}`);
+
+    if (!incomingPhone || !incomingMessage) {
+      return new Response('Missing transmission payloads', { status: 400 });
+    }
+
+    // Strip out non-numeric characters to avoid international number mismatch errors
     const cleanedPhone = incomingPhone.replace('whatsapp:', '').replace(/\D/g, '').trim();
     const actionTrigger = buttonPayload || incomingMessage.trim();
 
-    // Fetch vendor record from the database to link the order to Nenes
+    // Query your Supabase database to verify the vendor profile exists
     const { data: vendor } = await supabase.from('vendors').select('id').eq('slug', 'nenes').single();
-    if (!vendor) return new Response('Vendor mismatch', { status: 500 });
+    if (!vendor) {
+      console.error("❌ DB ERROR: Vendor profile 'nenes' not found.");
+      return new Response('Vendor mismatch', { status: 500 });
+    }
 
-    // Look up the customer profile using the cleaned phone number
+    // Check if this number already has an active account profile
     let { data: profile } = await supabase
       .from('customer_profiles')
       .select('*')
@@ -53,10 +63,11 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     // ==========================================
-    // LAYER A: ONBOARDING PIPELINE (NEW USER)
+    // LAYER A: REGISTRATION AND ONBOARDING
     // ==========================================
     if (!profile) {
-      // Create a temporary placeholder record setting the state to 'awaiting_name'
+      console.log(`🆕 NO ACCOUNT FOUND. Creating registration row for: ${cleanedPhone}`);
+      
       await supabase.from('customer_profiles').insert({
         phone_number: cleanedPhone,
         customer_name: 'Pending Registration',
@@ -64,7 +75,7 @@ export async function POST(request: Request) {
         current_state: 'awaiting_name'
       });
 
-      // Ask the user for their name directly without forcing any strict prefix commands
+      console.log(`💬 Dispatching onboarding registration question text...`);
       await sendTextMessage(
         incomingPhone, 
         `🇿🇦 Yo! Welcome to KasiCart // Nenes Street Kitchen!\n\nWe don't have your number registered yet.\n\nWhat should the chefs call you? Just reply with your name right now! 👇`
@@ -73,11 +84,11 @@ export async function POST(request: Request) {
       return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
     }
 
-    // If they exist and are stuck on the onboarding screen, whatever they type next IS their name
+    // If their state is 'awaiting_name', capture their raw text answer and save it
     if (profile.current_state === 'awaiting_name') {
       const chosenName = actionTrigger;
+      console.log(`📝 CAPTURED NAME TEXT -> Saving name as: ${chosenName}`);
 
-      // Update the name field and shift their state into 'browsing' mode
       const { data: updatedProfile } = await supabase
         .from('customer_profiles')
         .update({
@@ -90,7 +101,6 @@ export async function POST(request: Request) {
 
       profile = updatedProfile;
 
-      // Send the official greeting text along with the interactive section buttons
       await sendTextMessage(incomingPhone, `✨ Sho, ${chosenName}! Profile saved permanently. You've scored 5 Loyalty Points! 🎉`);
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
 
@@ -98,10 +108,10 @@ export async function POST(request: Request) {
     }
 
     // ==========================================
-    // LAYER B: BUTTON STATE ACTIONS ROUTER
+    // LAYER B: INTERACTIVE BUTTON NAVIGATION
     // ==========================================
+    console.log(`🕹️ EVALUATING INTERACTIVE TRIGGER KEY -> ${actionTrigger}`);
     
-    // Check if they pressed a category section navigation button
     if (actionTrigger === 'CAT_ALMIGHTY') {
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_ALMIGHTY_SID);
     } 
@@ -112,7 +122,7 @@ export async function POST(request: Request) {
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_DRINKS_SID);
     } 
 
-    // Check if they tapped an explicit item order button
+    // Handle food items and add them to the cart json column array
     else if (
       actionTrigger === 'ITEM_SPECIAL' || 
       actionTrigger === 'ITEM_FULLHOUSE' || 
@@ -133,17 +143,14 @@ export async function POST(request: Request) {
         case 'ITEM_STONEY':    itemName = 'Stoney Ginger Beer';    itemPrice = 18.00; break;
       }
 
-      // Grab current cart layout, push the chosen meal array object inside, and save back to DB
       const currentCart = profile.temp_cart_json || [];
       currentCart.push({ name: itemName, qty: 1, price: itemPrice });
 
       await supabase.from('customer_profiles').update({ temp_cart_json: currentCart }).eq('id', profile.id);
-      
-      // Prompt them with the checkout control template screen
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_CART_SID);
     } 
 
-    // Final Core Transactional Checkout Execution (Pressing Checkout Now Button)
+    // Handle checkout button press and move order to the visual monitor board
     else if (actionTrigger === 'CHECKOUT_CONFIRM') {
       const finalCart = profile.temp_cart_json || [];
 
@@ -153,7 +160,6 @@ export async function POST(request: Request) {
         return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
       }
 
-      // STREAM DIRECTLY TO LIVE KITCHEN MONITOR BOARD
       await supabase.from('orders').insert({
         vendor_id: vendor.id,
         customer_phone: profile.customer_name, 
@@ -161,16 +167,15 @@ export async function POST(request: Request) {
         items_json: finalCart
       });
 
-      // Clear the temporary cart column so they can start an entirely fresh order next time
       await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('id', profile.id);
 
       await sendTextMessage(
         incomingPhone, 
-        `🚀 WE FILING IT, ${profile.customer_name.toUpperCase()}!\n\nYour order just flew straight onto the chef's dashboard monitor screen. Completely interactive, zero typing required!\n\nKeep this chat thread open—we will drop an alert here the exact second your meal hits the roaring grill! 🔥🍟`
+        `🚀 WE FILING IT, ${profile.customer_name.toUpperCase()}!\n\nYour order just flew straight onto the chef's dashboard monitor screen. Completely interactive, zero typing required!\n\nKeep this chat open—we will drop an alert here the exact second it hits the grill! 🔥🍟`
       );
     } 
 
-    // Global Reset Interceptors (If they click clear, go back, or text menu/hi after onboarding)
+    // Handle clear actions or menu reset flags
     else if (actionTrigger === 'CLEAR_CART' || actionTrigger === 'GO_BACK' || actionTrigger.toLowerCase() === 'menu' || actionTrigger.toLowerCase() === 'hi') {
       await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('id', profile.id);
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
@@ -186,12 +191,12 @@ export async function POST(request: Request) {
     });
 
   } catch (err: any) {
-    console.error("Critical Button Pipeline Failure:", err.message);
+    console.error("❌ CRITICAL UNHANDLED ERROR IN ROUTE:", err.message);
     return new Response('Internal Webhook Error', { status: 500 });
   }
 }
 
-// REST Function: Sends structured interactive templates using Fetch POST requests to Twilio
+// Dispatches interactive template component records straight to Twilio API
 async function sendTwilioButtonTemplate(to: string, templateSid: string) {
   try {
     const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
@@ -211,11 +216,11 @@ async function sendTwilioButtonTemplate(to: string, templateSid: string) {
       body: params
     });
   } catch (e) {
-    console.error("Failed template fetch:", e);
+    console.error("❌ API EXECUTION ERROR (Template send failed):", e);
   }
 }
 
-// REST Function: Sends plain text strings using Fetch POST requests to Twilio
+// Dispatches traditional text strings straight to Twilio API
 async function sendTextMessage(to: string, text: string) {
   try {
     const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
@@ -235,6 +240,6 @@ async function sendTextMessage(to: string, text: string) {
       body: params
     });
   } catch (e) {
-    console.error("Failed text fetch:", e);
+    console.error("❌ API EXECUTION ERROR (Text send failed):", e);
   }
 }
