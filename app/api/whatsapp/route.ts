@@ -48,7 +48,7 @@ export async function POST(request: Request) {
     const { data: vendor } = await supabase.from('vendors').select('id').eq('slug', 'nenes').single();
     if (!vendor) return new Response('Vendor mismatch', { status: 500 });
 
-    // Look up user profile details
+    // Grab customer profile row
     let { data: profile } = await supabase
       .from('customer_profiles')
       .select('*')
@@ -59,15 +59,15 @@ export async function POST(request: Request) {
     // LAYER A: ONBOARDING REGISTRATION PIPELINE
     // ==========================================
     
-    // STEP 1: New phone number hits the bot for the first time
+    // STEP 1: New customer record bootstrapping phase
     if (!profile) {
-      console.log(`🆕 ACCOUNT MISSING -> Creating record in awaiting_name state for: ${cleanedPhone}`);
+      console.log(`🆕 NO ACCOUNT FOUND -> Creating base profile wrapper for: ${cleanedPhone}`);
       
       const { data: newProfile } = await supabase
         .from('customer_profiles')
         .upsert({
           phone_number: cleanedPhone,
-          customer_name: 'New Customer',
+          customer_name: 'AWAITING_NAME_STAGE',
           current_state: 'awaiting_name',
           loyalty_points: 5
         }, { onConflict: 'phone_number' })
@@ -82,16 +82,16 @@ export async function POST(request: Request) {
       return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
     }
 
-    // STEP 2: User profile exists and their current state machine is locked to 'awaiting_name'
-    if (profile.current_state === 'awaiting_name') {
+    // STEP 2: Handle the active name string capture step
+    if (profile.customer_name === 'AWAITING_NAME_STAGE' || profile.current_state === 'awaiting_name') {
       const chosenName = actionTrigger;
-      console.log(`📝 CAPTURING INBOUND NAME TEXT -> Setting name value to: "${chosenName}"`);
+      console.log(`📝 CAPTURING DIRECT NAME STRING -> Updating user record to: "${chosenName}"`);
 
       const { data: updatedProfile } = await supabase
         .from('customer_profiles')
         .update({
           customer_name: chosenName,
-          current_state: 'browsing' // Moves state out of registration loop permanently
+          current_state: 'browsing' // Moves state flag out of onboarding loop permanently
         })
         .eq('id', profile.id)
         .select()
@@ -201,13 +201,13 @@ async function sendTwilioButtonTemplate(to: string, templateSid: string) {
     params.append('To', to);
     params.append('ContentSid', templateSid);
 
-    const response = await fetch(url, {
+    await fetch(url, {
       method: 'POST',
       headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params
     });
   } catch (e) {
-    console.error("❌ PIPELINE REJECTION ERROR (sendTwilioButtonTemplate executed with invalid response):", e);
+    console.error("❌ TWILIO ROUTING EXCEPTION (Button request failed):", e);
   }
 }
 
@@ -221,12 +221,12 @@ async function sendTextMessage(to: string, text: string) {
     params.append('To', to);
     params.append('Body', text);
 
-    const response = await fetch(url, {
+    await fetch(url, {
       method: 'POST',
       headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params
     });
   } catch (e) {
-    console.error("❌ PIPELINE REJECTION ERROR (sendTextMessage executed with invalid response):", e);
+    console.error("❌ TWILIO ROUTING EXCEPTION (Text request failed):", e);
   }
 }
