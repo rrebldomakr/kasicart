@@ -2,14 +2,14 @@ import { NextResponse } from 'next/server';
 import { supabase } from '../../utils/supabase';
 
 // ==========================================
-// PASTE YOUR TWILIO CREDENTIALS HERE
+// SECURE SYSTEM VARIABLES FROM VERCEL CORE
 // ==========================================
-const TWILIO_ACCOUNT_SID = 'ACbf08959dc99af94412f4038dbebe6113';
-const TWILIO_AUTH_TOKEN = '827dffa937dcb6f83e91264220c38f5b';
-const TWILIO_PHONE_NUMBER = '+14155238886'; 
+const TWILIO_ACCOUNT_SID  = process.env.TWILIO_ACCOUNT_SID || '';
+const TWILIO_AUTH_TOKEN   = process.env.TWILIO_AUTH_TOKEN || '';
+const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER || '+14155238886'; 
 
 // ==========================================
-// PASTE YOUR TWILIO TEMPLATE SIDs HERE
+// PRODUCTION TWILIO TEMPLATE REGISTER
 // ==========================================
 const TEMPLATE_SECTIONS_SID = 'HX7bbe21cebedde5b2128187d4a56f0c88';
 const TEMPLATE_ALMIGHTY_SID = 'HXb178629ebc0d15513ff1e561a9e5d173';
@@ -98,8 +98,6 @@ export async function POST(request: Request) {
     // ==========================================
     // LAYER B: BUTTON STATE ACTIONS ROUTER
     // ==========================================
-    
-    // Core Section Links
     if (actionTrigger === 'CAT_ALMIGHTY') {
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_ALMIGHTY_SID);
     } 
@@ -164,7 +162,7 @@ export async function POST(request: Request) {
 
       await sendTextMessage(
         incomingPhone, 
-        `🚀 WE FILING IT, ${profile.customer_name.toUpperCase()}!\n\nYour order just flew straight onto the chef's dashboard monitor screen. Completely interactive, zero typing required!\n\nKeep this chat thread open—we will drop an alert here the exact second it hits the grill! 🔥🍟`
+        `🚀 WE FILING IT, ${profile.customer_name.toUpperCase()}!\n\nYour order just flew straight onto the chef's dashboard monitor screen. Completely interactive, zero typing required!\n\nKeep this chat thread open—we will drop an alert here the exact second your meal hits the roaring grill! 🔥🍟`
       );
     } 
 
@@ -190,39 +188,47 @@ export async function POST(request: Request) {
 }
 
 async function sendTwilioButtonTemplate(to: string, templateSid: string) {
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
-  const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
+  try {
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
+    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
 
-  const params = new URLSearchParams();
-  params.append('From', `whatsapp:${TWILIO_PHONE_NUMBER}`);
-  params.append('To', to);
-  params.append('ContentSid', templateSid);
+    const params = new URLSearchParams();
+    params.append('From', `whatsapp:${TWILIO_PHONE_NUMBER}`);
+    params.append('To', to);
+    params.append('ContentSid', templateSid);
 
-  await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Basic ${auth}`,
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: params
-  });
+    await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: params
+    });
+  } catch (e: any) {
+    console.error("Failed to send template message:", e);
+  }
 }
 
 async function sendTextMessage(to: string, text: string) {
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
-  const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
+  try {
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
+    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
 
-  const params = new URLSearchParams();
-  params.append('From', `whatsapp:${TWILIO_PHONE_NUMBER}`);
-  params.append('To', to);
-  params.append('Body', text);
+    const params = new URLSearchParams();
+    params.append('From', `whatsapp:${TWILIO_PHONE_NUMBER}`);
+    params.append('To', to);
+    params.append('Body', text);
 
-  await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Basic ${auth}`,
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: params
-  });
+    await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: params
+    });
+  } catch (e: any) {
+    console.error("Failed to send text message:", e);
+  }
 }
