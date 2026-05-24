@@ -8,7 +8,7 @@ export async function POST(request: Request) {
 
     const contentType = request.headers.get('content-type') || '';
 
-    // 1. Parse inbound data payload formats safely
+    // 1. Safe Inbound Form Parser
     if (contentType.includes('application/json')) {
       const body = await request.json();
       incomingPhone = body.phone || '';
@@ -24,7 +24,9 @@ export async function POST(request: Request) {
       return new Response('Missing transmission payloads', { status: 400 });
     }
 
-    // Fetch vendor record to ensure everything attaches to the correct kitchen shop
+    const cleanedInput = incomingMessage.trim();
+
+    // Fetch the active vendor record
     const { data: vendor } = await supabase
       .from('vendors')
       .select('id')
@@ -32,10 +34,10 @@ export async function POST(request: Request) {
       .single();
     
     if (!vendor) {
-      return new Response('Vendor not configured in DB', { status: 500 });
+      return new Response('Vendor configuration mismatch', { status: 500 });
     }
 
-    // 2. Query/Create Customer Profile with explicit state machine tracking memory
+    // 2. Fetch or Bootstrap Customer Dynamic Profile
     let { data: profile } = await supabase
       .from('customer_profiles')
       .select('*')
@@ -44,97 +46,135 @@ export async function POST(request: Request) {
 
     let replyText = '';
 
-    // STATE MACHINE CONTROLLER LAYER
     if (!profile) {
-      // PHASE 0: Complete stranger touches the system
-      if (incomingMessage.toLowerCase().startsWith('my name is')) {
-        const extractedName = incomingMessage.replace(/my name is/i, '').trim();
+      // User Registration Onboarding Layer
+      if (cleanedInput.toLowerCase().startsWith('my name is')) {
+        const extractedName = cleanedInput.replace(/my name is/i, '').trim();
         
         const { data: newProfile } = await supabase.from('customer_profiles').insert({
           phone_number: incomingPhone,
           customer_name: extractedName,
           loyalty_points: 5,
-          current_state: 'menu' // Push them straight to menu state on registration success
+          current_state: 'category_selection'
         }).select().single();
 
         profile = newProfile;
-        replyText = `✨ Sho, ${extractedName}! Account verified. You've scored 5 Loyalty Points! 🎉\n\n${await buildMenuText(vendor.id)}`;
+        replyText = `✨ Sho, ${extractedName}! Account verified. You just scored 5 Loyalty Points! 🎉\n\n${await buildCategoryMenu(vendor.id)}`;
       } else {
         replyText = `🇿🇦 Yo! Welcome to KasiCart // Nenes Street Kitchen!\n\nWe don't have your number registered yet.\n\nTo setup your profile instantly, reply with:\n"My name is [Your Name]"`;
       }
     } else {
-      // Handle fallback resets if the user types "reset" or gets lost
-      if (incomingMessage.toLowerCase().trim() === 'reset') {
-        await supabase.from('customer_profiles').update({ current_state: 'menu' }).eq('id', profile.id);
-        profile.current_state = 'menu';
-      }
+      // Direct Reset Flag
+      if (cleanedInput.toLowerCase() === 'reset' || cleanedInput.toLowerCase() === 'menu') {
+        await supabase.from('customer_profiles').update({ current_state: 'category_selection', temp_cart_json: null }).eq('id', profile.id);
+        replyText = `🔄 Back to main menu!\n\n${await buildCategoryMenu(vendor.id)}`;
+      } 
+      
+      // STATE 1: Choosing a Menu Category
+      else if (profile.current_state === 'category_selection' || !profile.current_state) {
+        const selectedCatIndex = parseInt(cleanedInput);
 
-      // PHASE 1: User is currently browsing the menu table options
-      if (profile.current_state === 'menu') {
-        const selectedIndex = parseInt(incomingMessage.trim());
-
-        if (!isNaN(selectedIndex) && selectedIndex > 0) {
-          // Fetch menu items from database to match the number selection choice
-          const { data: items } = await supabase
-            .from('menu_items')
+        if (!isNaN(selectedCatIndex) && selectedCatIndex > 0) {
+          const { data: categories } = await supabase
+            .from('menu_categories')
             .select('*')
             .eq('vendor_id', vendor.id)
-            .order('created_at', { ascending: true });
+            .order('display_order', { ascending: true });
 
-          if (items && items[selectedIndex - 1]) {
-            const chosenItem = items[selectedIndex - 1];
+          if (categories && categories[selectedCatIndex - 1]) {
+            const chosenCategory = categories[selectedCatIndex - 1];
 
-            // Store selection data directly inside the user profile memory space as temporary metadata
+            // Advance state to item selection and store which category they are looking at
             await supabase.from('customer_profiles').update({ 
-              current_state: 'cart',
-              temp_cart_json: [{ name: chosenItem.name, qty: 1, price: chosenItem.price }]
+              current_state: `items_selection:${chosenCategory.id}` 
             }).eq('id', profile.id);
 
-            replyText = `🛒 CUSTOMER CART CHECKOUT:\n\nYou selected: *1x ${chosenItem.name} (R${chosenItem.price})*\n\nReply with:\n*Y* to confirm and send to kitchen\n*N* to clear and view menu again`;
+            replyText = await buildItemMenu(vendor.id, chosenCategory.id, chosenCategory.name);
           } else {
-            replyText = `⚠️ Out of range! Please choose a valid index number from the list:\n\n${await buildMenuText(vendor.id)}`;
+            replyText = `⚠️ Out of range. Choose a valid category number:\n\n${await buildCategoryMenu(vendor.id)}`;
           }
         } else {
-          replyText = `👋 Hello ${profile.customer_name}!\n\nHere is our current live kitchen selection:\n\n${await buildMenuText(vendor.id)}`;
+          replyText = `👋 Hello ${profile.customer_name}!\n\n${await buildCategoryMenu(vendor.id)}`;
         }
       } 
       
-      // PHASE 2: User is standing at the transactional cart checkout line
-      else if (profile.current_state === 'cart') {
-        const choice = incomingMessage.trim().toLowerCase();
+      // STATE 2: Browsing Items Inside a Specific Category
+      else if (profile.current_state.startsWith('items_selection:')) {
+        const categoryId = profile.current_state.split(':')[1];
+        const selectedItemIndex = parseInt(cleanedInput);
 
-        if (choice === 'y') {
-          const cartItems = profile.temp_cart_json || [{ name: "Almighty Burger with Rib & Bacon", qty: 1 }];
+        if (cleanedInput.toLowerCase() === 'b') {
+          // Go back to categories
+          await supabase.from('customer_profiles').update({ current_state: 'category_selection' }).eq('id', profile.id);
+          replyText = await buildCategoryMenu(vendor.id);
+        } else if (!isNaN(selectedItemIndex) && selectedItemIndex > 0) {
+          const { data: items } = await supabase
+            .from('menu_items')
+            .select('*')
+            .eq('category_id', categoryId)
+            .order('created_at', { ascending: true });
 
-          // Write data straight into production kitchen streaming pipeline
-          await supabase.from('orders').insert({
-            vendor_id: vendor.id,
-            customer_phone: profile.customer_name, 
-            status: 'incoming',
-            items_json: cartItems
-          });
+          if (items && items[selectedItemIndex - 1]) {
+            const chosenItem = items[selectedItemIndex - 1];
+            
+            // Build modern interactive cart payload structure
+            const totalCart = profile.temp_cart_json || [];
+            totalCart.push({ name: chosenItem.name, qty: 1, price: chosenItem.price });
 
-          // Reset user session engine state machine state safely back to browsing phase
-          await supabase.from('customer_profiles').update({ 
-            current_state: 'menu',
-            temp_cart_json: null 
-          }).eq('id', profile.id);
+            await supabase.from('customer_profiles').update({
+              current_state: 'cart_review',
+              temp_cart_json: totalCart
+            }).eq('id', profile.id);
 
-          replyText = `🚀 ORDER SHIPPED TO KITCHEN!\n\nOur chefs just received your order line. Keep this screen chat window open—we text you when it hits the grill! 🔥`;
-        } else if (choice === 'n') {
-          await supabase.from('customer_profiles').update({ 
-            current_state: 'menu',
-            temp_cart_json: null 
-          }).eq('id', profile.id);
-
-          replyText = `🗑️ Cart cleared out!\n\nHere is the menu list again:\n\n${await buildMenuText(vendor.id)}`;
+            replyText = buildCartReviewText(profile.customer_name, totalCart);
+          } else {
+            replyText = `⚠️ Item number does not exist. Choose an option from the list or reply *B* to go back.`;
+          }
         } else {
-          replyText = `⚠️ Invalid entry! Please reply with *Y* to confirm your purchase or *N* to cancel it.`;
+          replyText = `Standard text ignored. Please enter an option number or reply *B* to return to main categories.`;
+        }
+      } 
+      
+      // STATE 3: Standalone Cart Validation and Smart Interface Triggers
+      else if (profile.current_state === 'cart_review') {
+        const option = cleanedInput.toLowerCase();
+
+        if (option === '1' || option === 'add') {
+          // Send back to category selection to add more meals
+          await supabase.from('customer_profiles').update({ current_state: 'category_selection' }).eq('id', profile.id);
+          replyText = `➕ Let's add more grub!\n\n${await buildCategoryMenu(vendor.id)}`;
+        } else if (option === '2' || option === 'checkout') {
+          const activeCart = profile.temp_cart_json || [];
+
+          if (activeCart.length === 0) {
+            replyText = `⚠️ Your cart is empty! Let's grab food first.\n\n${await buildCategoryMenu(vendor.id)}`;
+          } else {
+            // Push structured multi-item order straight onto the live kitchen layout stream
+            await supabase.from('orders').insert({
+              vendor_id: vendor.id,
+              customer_phone: profile.customer_name,
+              status: 'incoming',
+              items_json: activeCart
+            });
+
+            // Flush out session store states completely to safely conclude execution loop
+            await supabase.from('customer_profiles').update({
+              current_state: 'category_selection',
+              temp_cart_json: null
+            }).eq('id', profile.id);
+
+            replyText = `🚀 WE FILING IT!\n\nYour order just flew straight onto the chef's dashboard monitor screen.\n\nKeep this chat open—we will drop a text here the exact second your meal hits the roaring grill! 🔥🍟`;
+          }
+        } else if (option === '3' || option === 'clear') {
+          await supabase.from('customer_profiles').update({ current_state: 'category_selection', temp_cart_json: null }).eq('id', profile.id);
+          replyText = `🗑️ Cart wiped out completely!\n\n${await buildCategoryMenu(vendor.id)}`;
+        } else {
+          replyText = `⚠️ Standard action locked out. Reply with:\n*1* to Add More\n*2* to Checkout\n*3* to Clear Cart`;
         }
       }
     }
 
-    // 3. Compile output structural TwiML response container
+    // 3. Compile structural output responses
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
     <Response>
         <Message>${replyText}</Message>
@@ -146,27 +186,69 @@ export async function POST(request: Request) {
     });
 
   } catch (err: any) {
-    console.error("Critical Webhook Pipeline Failure:", err.message);
+    console.error("Critical Webhook Failure:", err.message);
     return new Response('Internal Webhook Error', { status: 500 });
   }
 }
 
-// Helper Function to compile database records dynamically into beautiful text strings
-async function buildMenuText(vendorId: string): Promise<string> {
+// Render dynamic interactive category options
+async function buildCategoryMenu(vendorId: string): Promise<string> {
+  const { data: categories } = await supabase
+    .from('menu_categories')
+    .select('*')
+    .eq('vendor_id', vendorId)
+    .order('display_order', { ascending: true });
+
+  if (!categories || categories.length === 0) {
+    return "🍽️ Menu is currently updating. Text back in a few seconds!";
+  }
+
+  let text = "📋 NENES KITCHEN SECTIONS:\n\n";
+  categories.forEach((cat, idx) => {
+    text += `*${idx + 1}* — ${cat.name} 🛒\n`;
+  });
+  text += `\nReply with the section number to view items (or text *menu* anytime to reset).`;
+  return text;
+}
+
+// Render items specific to chosen sub-category filter
+async function buildItemMenu(vendorId: string, categoryId: string, categoryName: string): Promise<string> {
   const { data: items } = await supabase
     .from('menu_items')
     .select('*')
     .eq('vendor_id', vendorId)
+    .eq('category_id', categoryId)
     .order('created_at', { ascending: true });
 
+  let text = `🔥 ${categoryName} SELECTION:\n\n`;
+  
   if (!items || items.length === 0) {
-    return "🍽️ Menu is currently loading up or sold out. Try again shortly!";
+    text += `Items currently sold out in this section.\n\n`;
+  } else {
+    items.forEach((item, idx) => {
+      text += `*${idx + 1}*. ${item.name} — R${item.price}\n_${item.description || 'Fresh local prep'}_\n\n`;
+    });
   }
+  
+  text += `Reply with the item number to pack it into your cart, or reply *B* to go back to categories.`;
+  return text;
+}
 
-  let menuString = "📋 SELECT YOUR MEAL:\n\n";
-  items.forEach((item, index) => {
-    menuString += `*${index + 1}*. ${item.name} — R${item.price}\n_${item.description || 'Freshly grilled custom special'}_\n\n`;
+// Format the structural checkout validation display block
+function buildCartReviewText(customerName: string, cart: any[]): string {
+  let total = 0;
+  let summary = `🛒 COCKED & LOADED CART // ${customerName.toUpperCase()}:\n\n`;
+  
+  cart.forEach((item) => {
+    summary += `• 1x ${item.name} (R${item.price})\n`;
+    total += parseFloat(item.price);
   });
-  menuString += "Reply with the Option Number (e.g. 1) to start checkout.";
-  return menuString;
+
+  summary += `\n*Total Amount:* R${total.toFixed(2)}\n\n`;
+  summary += `────────────────────\n`;
+  summary += `*1* ➕ Add More Meals\n`;
+  summary += `*2* 🚀 Proceed to Checkout\n`;
+  summary += `*3* 🗑️ Clear Cart and Restart`;
+  
+  return summary;
 }
