@@ -9,13 +9,13 @@ const TWILIO_AUTH_TOKEN   = '12ce467c7b80172fc94c9c7c5f9c1967';
 const TWILIO_PHONE_NUMBER = '+14155238886'; 
 
 // ==========================================
-// PRODUCTION TWILIO TEMPLATE REGISTER
+// NEW PRODUCTION PURE ENGLISH CONTENT SIDs
 // ==========================================
-const TEMPLATE_SECTIONS_SID = 'HX7bbe21cebedde5b2128187d4a56f0c88';
-const TEMPLATE_ALMIGHTY_SID = 'HXb178629ebc0d15513ff1e561a9e5d173';
-const TEMPLATE_KING_SID     = 'HX20163686b3dd0eb6bc28c948ac96c34c';     
-const TEMPLATE_DRINKS_SID    = 'HXe8d3a2c3791b89b25078096fa5f5e22b';   
-const TEMPLATE_CART_SID     = 'HX2c22420044694b5c0fa64ec25b14cf84';
+const TEMPLATE_SECTIONS_SID = 'HX7bbe21cebedde5b2128187d4a56f0c88'; 
+const TEMPLATE_ALMIGHTY_SID = 'HX22caec023b6720ffdbe41fdc8aa3e570';
+const TEMPLATE_KING_SID     = 'HXd68eb7a54bccfba990891b1fdbf0090b';     
+const TWILIO_DRINKS_SID     = 'HX74801bc0a507324aa6f22d5ecabb8442';   
+const TEMPLATE_CART_SID     = 'HXd5b953f276e46fc680219e693dddf254';
 
 export async function POST(request: Request) {
   try {
@@ -25,6 +25,7 @@ export async function POST(request: Request) {
 
     const contentType = request.headers.get('content-type') || '';
 
+    // EXTRACT PHASE: Read incoming web payload parameters out of Twilio's incoming webhook post
     if (contentType.includes('application/json')) {
       const body = await request.json();
       incomingPhone = body.phone || '';
@@ -42,13 +43,15 @@ export async function POST(request: Request) {
       return new Response('Missing transmission payloads', { status: 400 });
     }
 
+    // NORMALIZATION PHASE: Keep pure numeric matching keys and strip format strings
     const cleanedPhone = incomingPhone.replace('whatsapp:', '').replace(/\D/g, '').trim();
     const actionTrigger = buttonPayload || incomingMessage.trim();
 
+    // VENDOR MATCHING: Ensure nenes profile link context is active
     const { data: vendor } = await supabase.from('vendors').select('id').eq('slug', 'nenes').single();
     if (!vendor) return new Response('Vendor mismatch', { status: 500 });
 
-    // Look up the customer profile record
+    // Look up user profile row records
     let { data: profile } = await supabase
       .from('customer_profiles')
       .select('*')
@@ -59,16 +62,15 @@ export async function POST(request: Request) {
     // LAYER A: ONBOARDING REGISTRATION PIPELINE
     // ==========================================
     
-    // STEP 1: If no profile exists, create a baseline record in the 'awaiting_name' state
+    // STEP 1: Number hits for the first time -> create row card entry
     if (!profile) {
-      console.log(`🆕 NO PROFILE FOUND -> Initializing baseline row for number: ${cleanedPhone}`);
+      console.log(`🆕 ACCOUNT MISSING -> Registering base database profile row for number: ${cleanedPhone}`);
       
       const { data: newProfile } = await supabase
         .from('customer_profiles')
         .upsert({
           phone_number: cleanedPhone,
           customer_name: 'AWAITING_NAME_STAGE',
-          current_state: 'awaiting_name',
           loyalty_points: 5
         }, { onConflict: 'phone_number' })
         .select()
@@ -82,24 +84,22 @@ export async function POST(request: Request) {
       return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
     }
 
-    // STEP 2: Catch their text reply, save it as their name, and break the onboarding loop completely
-    if (profile.customer_name === 'AWAITING_NAME_STAGE' || profile.current_state === 'awaiting_name') {
+    // STEP 2: Profile row exists but is currently flagged as awaiting setup name string
+    if (profile.customer_name === 'AWAITING_NAME_STAGE') {
       const chosenName = actionTrigger;
-      console.log(`📝 PROFILE FOUND IN REGISTRATION MODE -> Overwriting name to: "${chosenName}"`);
+      console.log(`📝 CAPTURING INBOUND NAME TEXT -> Target Phone: ${cleanedPhone} -> Setting value to: "${chosenName}"`);
 
       const { data: updatedProfile } = await supabase
         .from('customer_profiles')
         .update({
-          customer_name: chosenName,
-          current_state: 'browsing' // Shift state to browsing permanently
+          customer_name: chosenName
         })
-        .eq('id', profile.id)
+        .eq('phone_number', cleanedPhone)
         .select()
         .single();
 
       profile = updatedProfile;
 
-      // Send a plain text confirmation instead of a template to open the Twilio interactive channel safely
       await sendTextMessage(
         incomingPhone, 
         `✨ Sho, ${chosenName}! Your profile is saved permanently. You've scored 5 Loyalty Points! 🎉\n\nTo view the interactive food menu, just reply with the word *'menu'* right now!`
@@ -111,7 +111,7 @@ export async function POST(request: Request) {
     // ==========================================
     // LAYER B: INTERACTIVE BUTTON NAVIGATION ROUTER
     // ==========================================
-    console.log(`🕹️ EVALUATING INTERACTIVE PAYLOAD KEY -> "${actionTrigger}" for customer: ${profile.customer_name}`);
+    console.log(`🕹️ EVALUATING INTERACTIVE PAYLOAD KEY -> "${actionTrigger}" for customer: ${profile?.customer_name}`);
 
     if (actionTrigger === 'CAT_ALMIGHTY') {
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_ALMIGHTY_SID);
@@ -120,9 +120,10 @@ export async function POST(request: Request) {
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_KING_SID);
     } 
     else if (actionTrigger === 'CAT_DRINKS') {
-      await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_DRINKS_SID);
+      await sendTwilioButtonTemplate(incomingPhone, TWILIO_DRINKS_SID);
     } 
 
+    // Process meal items and add them straight to the temporary json cart data column
     else if (
       actionTrigger === 'ITEM_SPECIAL' || 
       actionTrigger === 'ITEM_FULLHOUSE' || 
@@ -146,10 +147,11 @@ export async function POST(request: Request) {
       const currentCart = profile.temp_cart_json || [];
       currentCart.push({ name: itemName, qty: 1, price: itemPrice });
 
-      await supabase.from('customer_profiles').update({ temp_cart_json: currentCart }).eq('id', profile.id);
+      await supabase.from('customer_profiles').update({ temp_cart_json: currentCart }).eq('phone_number', cleanedPhone);
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_CART_SID);
     } 
 
+    // Final Core checkout execution layer -> drops directly onto chef screen panel streams
     else if (actionTrigger === 'CHECKOUT_CONFIRM') {
       const finalCart = profile.temp_cart_json || [];
 
@@ -166,7 +168,7 @@ export async function POST(request: Request) {
         items_json: finalCart
       });
 
-      await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('id', profile.id);
+      await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('phone_number', cleanedPhone);
 
       await sendTextMessage(
         incomingPhone, 
@@ -175,7 +177,7 @@ export async function POST(request: Request) {
     } 
 
     else if (actionTrigger === 'CLEAR_CART' || actionTrigger === 'GO_BACK' || actionTrigger.toLowerCase() === 'menu' || actionTrigger.toLowerCase() === 'hi') {
-      await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('id', profile.id);
+      await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('phone_number', cleanedPhone);
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
     } 
     
@@ -189,7 +191,7 @@ export async function POST(request: Request) {
     });
 
   } catch (err: any) {
-    console.error("❌ SYSTEM FAILURE ENCOUNTERED INSIDE FUNCTION ENGINE:", err.message);
+    console.error(" Critical Button Pipeline Failure:", err.message);
     return new Response('Internal Webhook Error', { status: 500 });
   }
 }
@@ -210,7 +212,7 @@ async function sendTwilioButtonTemplate(to: string, templateSid: string) {
       body: params
     });
   } catch (e) {
-    console.error("❌ TWILIO ROUTING EXCEPTION (Button template fetch failed):", e);
+    console.error("❌ TWILIO ROUTING EXCEPTION (Button template send failed):", e);
   }
 }
 
@@ -230,6 +232,6 @@ async function sendTextMessage(to: string, text: string) {
       body: params
     });
   } catch (e) {
-    console.error("❌ TWILIO ROUTING EXCEPTION (Plain text fetch failed):", e);
+    console.error("❌ TWILIO ROUTING EXCEPTION (Plain text send failed):", e);
   }
 }
