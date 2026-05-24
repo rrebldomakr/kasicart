@@ -1,16 +1,10 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '../../utils/supabase';
 
-// ==========================================
-// SECURE SYSTEM VARIABLES FROM VERCEL CORE
-// ==========================================
 const TWILIO_ACCOUNT_SID  = process.env.TWILIO_ACCOUNT_SID || '';
 const TWILIO_AUTH_TOKEN   = process.env.TWILIO_AUTH_TOKEN || '';
 const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER || '+14155238886'; 
 
-// ==========================================
-// PRODUCTION TWILIO TEMPLATE REGISTER
-// ==========================================
 const TEMPLATE_SECTIONS_SID = 'HX7bbe21cebedde5b2128187d4a56f0c88';
 const TEMPLATE_ALMIGHTY_SID = 'HXb178629ebc0d15513ff1e561a9e5d173';
 const TEMPLATE_KING_SID     = 'HX20163686b3dd0eb6bc28c948ac96c34c';     
@@ -25,7 +19,6 @@ export async function POST(request: Request) {
 
     const contentType = request.headers.get('content-type') || '';
 
-    // 1. Parse inbound payloads safely
     if (contentType.includes('application/json')) {
       const body = await request.json();
       incomingPhone = body.phone || '';
@@ -37,6 +30,8 @@ export async function POST(request: Request) {
       buttonPayload = formData.get('ButtonPayload')?.toString() || '';
     }
 
+    console.log(`📥 INBOUND WEBHOOK -> Phone: ${incomingPhone}, Msg: ${incomingMessage}, Payload: ${buttonPayload}`);
+
     if (!incomingPhone || !incomingMessage) {
       return new Response('Missing transmission payloads', { status: 400 });
     }
@@ -44,21 +39,23 @@ export async function POST(request: Request) {
     const cleanedPhone = incomingPhone.replace('whatsapp:', '').replace(/\D/g, '').trim();
     const actionTrigger = buttonPayload || incomingMessage.trim();
 
-    // Fetch vendor record
     const { data: vendor } = await supabase.from('vendors').select('id').eq('slug', 'nenes').single();
-    if (!vendor) return new Response('Vendor mismatch', { status: 500 });
+    if (!vendor) {
+      console.error("❌ DATABASE ERROR: Vendor 'nenes' not found.");
+      return new Response('Vendor mismatch', { status: 500 });
+    }
 
-    // Fetch user profile from database
     let { data: profile } = await supabase
       .from('customer_profiles')
       .select('*')
       .eq('phone_number', cleanedPhone)
       .maybeSingle();
 
-    // ==========================================
+    console.log(`👤 DB PROFILE MATCH -> ${profile ? `Found: ${profile.customer_name} (State: ${profile.current_state})` : 'No profile found'}`);
+
     // LAYER A: ONBOARDING PIPELINE
-    // ==========================================
     if (!profile) {
+      console.log(`🆕 BOOTSTRAPPING NEW PROFILE FOR: ${cleanedPhone}`);
       await supabase.from('customer_profiles').insert({
         phone_number: cleanedPhone,
         customer_name: 'Pending Registration',
@@ -66,6 +63,7 @@ export async function POST(request: Request) {
         current_state: 'awaiting_name'
       });
 
+      console.log(`💬 DISPATCHING GREETING TEXT...`);
       await sendTextMessage(
         incomingPhone, 
         `🇿🇦 Yo! Welcome to KasiCart // Nenes Street Kitchen!\n\nWe don't have your number registered yet.\n\nWhat should the chefs call you? Just reply with your name right now! 👇`
@@ -76,6 +74,7 @@ export async function POST(request: Request) {
 
     if (profile.current_state === 'awaiting_name') {
       const chosenName = actionTrigger;
+      console.log(`📝 SAVING USER NAME -> ${chosenName}`);
 
       const { data: updatedProfile } = await supabase
         .from('customer_profiles')
@@ -95,9 +94,8 @@ export async function POST(request: Request) {
       return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
     }
 
-    // ==========================================
     // LAYER B: BUTTON STATE ACTIONS ROUTER
-    // ==========================================
+    console.log(`🕹️ ROUTING ACTION TRIGGER -> ${actionTrigger}`);
     if (actionTrigger === 'CAT_ALMIGHTY') {
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_ALMIGHTY_SID);
     } 
@@ -107,8 +105,6 @@ export async function POST(request: Request) {
     else if (actionTrigger === 'CAT_DRINKS') {
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_DRINKS_SID);
     } 
-
-    // Specific Item Cart Injection Processors
     else if (
       actionTrigger === 'ITEM_SPECIAL' || 
       actionTrigger === 'ITEM_FULLHOUSE' || 
@@ -132,14 +128,9 @@ export async function POST(request: Request) {
       const currentCart = profile.temp_cart_json || [];
       currentCart.push({ name: itemName, qty: 1, price: itemPrice });
 
-      await supabase.from('customer_profiles').update({
-        temp_cart_json: currentCart
-      }).eq('id', profile.id);
-
+      await supabase.from('customer_profiles').update({ temp_cart_json: currentCart }).eq('id', profile.id);
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_CART_SID);
     } 
-
-    // Final Core Transactional Checkout Execution
     else if (actionTrigger === 'CHECKOUT_CONFIRM') {
       const finalCart = profile.temp_cart_json || [];
 
@@ -149,7 +140,6 @@ export async function POST(request: Request) {
         return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
       }
 
-      // STREAM DIRECTLY TO LIVE KITCHEN BOARD
       await supabase.from('orders').insert({
         vendor_id: vendor.id,
         customer_phone: profile.customer_name, 
@@ -157,21 +147,13 @@ export async function POST(request: Request) {
         items_json: finalCart
       });
 
-      // Clear operational cart storage completely
       await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('id', profile.id);
 
       await sendTextMessage(
         incomingPhone, 
-        `🚀 WE FILING IT, ${profile.customer_name.toUpperCase()}!\n\nYour order just flew straight onto the chef's dashboard monitor screen. Completely interactive, zero typing required!\n\nKeep this chat thread open—we will drop an alert here the exact second your meal hits the roaring grill! 🔥🍟`
+        `🚀 WE FILING IT, ${profile.customer_name.toUpperCase()}!\n\nYour order just flew straight onto the chef's dashboard monitor screen.`
       );
     } 
-
-    // Reset Routing and Cart Flushes
-    else if (actionTrigger === 'CLEAR_CART' || actionTrigger === 'GO_BACK' || actionTrigger.toLowerCase() === 'menu' || actionTrigger.toLowerCase() === 'hi') {
-      await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('id', profile.id);
-      await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
-    } 
-    
     else {
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
     }
@@ -182,13 +164,14 @@ export async function POST(request: Request) {
     });
 
   } catch (err: any) {
-    console.error("Critical Button Pipeline Failure:", err.message);
+    console.error("❌ CRITICAL ROUTE CRASH:", err.message);
     return new Response('Internal Webhook Error', { status: 500 });
   }
 }
 
 async function sendTwilioButtonTemplate(to: string, templateSid: string) {
   try {
+    console.log(`📤 CALLING TWILIO TEMPLATE API -> Target: ${to}, SID: ${templateSid}`);
     const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
     const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
 
@@ -197,21 +180,23 @@ async function sendTwilioButtonTemplate(to: string, templateSid: string) {
     params.append('To', to);
     params.append('ContentSid', templateSid);
 
-    await fetch(url, {
+    const res = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
+      headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params
     });
+
+    const data = await res.json();
+    if (!res.ok) console.error("❌ TWILIO TEMPLATE REJECTION:", JSON.stringify(data));
+    else console.log(`✅ TWILIO TEMPLATE ACCEPTED -> SID: ${data.sid}`);
   } catch (e: any) {
-    console.error("Failed to send template message:", e);
+    console.error("❌ TWILIO FETCH FUNCTION CRASH (Template):", e.message);
   }
 }
 
 async function sendTextMessage(to: string, text: string) {
   try {
+    console.log(`📤 CALLING TWILIO TEXT API -> Target: ${to}`);
     const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
     const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
 
@@ -220,15 +205,16 @@ async function sendTextMessage(to: string, text: string) {
     params.append('To', to);
     params.append('Body', text);
 
-    await fetch(url, {
+    const res = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
+      headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params
     });
+
+    const data = await res.json();
+    if (!res.ok) console.error("❌ TWILIO TEXT REJECTION:", JSON.stringify(data));
+    else console.log(`✅ TWILIO TEXT ACCEPTED -> SID: ${data.sid}`);
   } catch (e: any) {
-    console.error("Failed to send text message:", e);
+    console.error("❌ TWILIO FETCH FUNCTION CRASH (Text):", e.message);
   }
 }
