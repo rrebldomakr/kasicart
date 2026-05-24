@@ -48,7 +48,7 @@ export async function POST(request: Request) {
     const { data: vendor } = await supabase.from('vendors').select('id').eq('slug', 'nenes').single();
     if (!vendor) return new Response('Vendor mismatch', { status: 500 });
 
-    // Profile retrieval/safe bootstrap wrapper
+    // Profile retrieval/safe auto-upsert wrapper
     let { data: profile } = await supabase
       .from('customer_profiles')
       .select('*')
@@ -56,12 +56,12 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (!profile) {
+      console.log(`🆕 AUTOMATIC REGISTRATION -> Provisioning row card for: ${cleanedPhone}`);
       const { data: newProfile } = await supabase
         .from('customer_profiles')
         .upsert({
           phone_number: cleanedPhone,
           customer_name: 'Kasi Customer',
-          current_state: 'browsing',
           loyalty_points: 5
         }, { onConflict: 'phone_number' })
         .select()
@@ -71,41 +71,9 @@ export async function POST(request: Request) {
     }
 
     // ==========================================
-    // INTERCEPTOR: MID-CHECKOUT NAME COLLECTION
+    // BUTTON ACTIONS ENGINE ROUTER
     // ==========================================
-    if (profile.current_state === 'awaiting_checkout_name') {
-      const customerNameInput = actionTrigger;
-      console.log(`📝 MID-CHECKOUT NAME CAPTURED -> Saving name: "${customerNameInput}" for order filing`);
-
-      const finalCart = profile.temp_cart_json || [];
-
-      // 1. Stream the final transactional order ticket card directly onto the chef live dash monitor
-      await supabase.from('orders').insert({
-        vendor_id: vendor.id,
-        customer_phone: customerNameInput, // Saved under their real inputted tracking name
-        status: 'incoming',
-        items_json: finalCart
-      });
-
-      // 2. Reset customer state metrics and clean out the temporary json columns
-      await supabase.from('customer_profiles').update({ 
-        customer_name: customerNameInput,
-        temp_cart_json: null,
-        current_state: 'browsing' 
-      }).eq('phone_number', cleanedPhone);
-
-      await sendTextMessage(
-        incomingPhone, 
-        `🚀 WE FILING IT, ${customerNameInput.toUpperCase()}!\n\nYour order just flew straight onto Nenes Street Kitchen monitor board dashboard monitor screen.\n\nKeep this chat open—we will drop an alert here the exact second your meal hits the roaring grill! 🔥🍟`
-      );
-
-      return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
-    }
-
-    // ==========================================
-    // ACTIONS SYSTEM CORE ROUTER
-    // ==========================================
-    console.log(`🕹️ ACTION ENGINE -> Processing key: "${actionTrigger}"`);
+    console.log(`🕹️ EVALUATING KEY SWITCH -> "${actionTrigger}"`);
 
     // Category Navigation Streams
     if (actionTrigger === 'CAT_ALMIGHTY') {
@@ -143,33 +111,36 @@ export async function POST(request: Request) {
       currentCart.push({ name: itemName, qty: 1, price: itemPrice });
 
       await supabase.from('customer_profiles').update({ temp_cart_json: currentCart }).eq('phone_number', cleanedPhone);
-      
-      // Deliver the cart selection buttons review page template layout
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_CART_SID);
     } 
 
-    // Checkout Confirmation Trigger (User clicks Checkout Now button component)
+    // Checkout Trigger Phase -> Directly files to the live dashboard monitor screen panel
     else if (actionTrigger === 'CHECKOUT_CONFIRM') {
-      const checkCart = profile.temp_cart_json || [];
+      const finalCart = profile.temp_cart_json || [];
 
-      if (checkCart.length === 0) {
-        await sendTextMessage(incomingPhone, `⚠️ Your cart is currently empty! Pick some food from the selections first.`);
+      if (finalCart.length === 0) {
         await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
         return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' }, status: 200 });
       }
 
-      // Instead of locking execution, update state to expect a name string reply text input next
-      await supabase.from('customer_profiles').update({ current_state: 'awaiting_checkout_name' }).eq('phone_number', cleanedPhone);
+      await supabase.from('orders').insert({
+        vendor_id: vendor.id,
+        customer_phone: cleanedPhone, // Pure tracking identity validation
+        status: 'incoming',
+        items_json: finalCart
+      });
+
+      await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('phone_number', cleanedPhone);
 
       await sendTextMessage(
         incomingPhone, 
-        `🛒 Sweet, meals added successfully!\n\nWho is this order for? Just reply with your name right now so the chefs know who to call when it's sizzling hot! 👇`
+        `🚀 ORDER FILED SUCCESSFULLY!\n\nYour menu selections just flew straight onto Nenes Street Kitchen monitor board dashboard monitor screen.\n\nKeep this chat thread open—we will drop an alert here the exact second your meal hits the roaring grill! 🔥🍟`
       );
     } 
 
-    // Fallback Reset Commands
+    // Reset fallback handling routines
     else if (actionTrigger === 'CLEAR_CART' || actionTrigger === 'GO_BACK' || actionTrigger.toLowerCase() === 'menu' || actionTrigger.toLowerCase() === 'hi') {
-      await supabase.from('customer_profiles').update({ temp_cart_json: null, current_state: 'browsing' }).eq('phone_number', cleanedPhone);
+      await supabase.from('customer_profiles').update({ temp_cart_json: null }).eq('phone_number', cleanedPhone);
       await sendTwilioButtonTemplate(incomingPhone, TEMPLATE_SECTIONS_SID);
     } 
     
@@ -204,7 +175,7 @@ async function sendTwilioButtonTemplate(to: string, templateSid: string) {
       body: params
     });
   } catch (e) {
-    console.error("❌ Template delivery error:", e);
+    console.error("❌ Template delivery failed:", e);
   }
 }
 
@@ -224,6 +195,6 @@ async function sendTextMessage(to: string, text: string) {
       body: params
     });
   } catch (e) {
-    console.error("❌ Text delivery error:", e);
+    console.error("❌ Text string delivery failed:", e);
   }
 }
