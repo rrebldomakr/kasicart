@@ -17,12 +17,15 @@ export async function POST(request: Request) {
       const formData = await request.formData();
       incomingPhone = formData.get('From')?.toString() || ''; 
       incomingMessage = formData.get('Body')?.toString() || '';
-      incomingPhone = incomingPhone.replace('whatsapp:', '').trim();
     }
 
     if (!incomingPhone || !incomingMessage) {
       return new Response('Missing transmission payloads', { status: 400 });
     }
+
+    // NORMALIZE PHONE NUMBER: Strip "whatsapp:", "+", and all non-numeric characters
+    let cleanedPhone = incomingPhone.replace('whatsapp:', '').trim();
+    cleanedPhone = cleanedPhone.replace(/\D/g, ''); // Leaves only pure digits like 27813988827
 
     const cleanedInput = incomingMessage.trim();
 
@@ -37,11 +40,11 @@ export async function POST(request: Request) {
       return new Response('Vendor configuration mismatch', { status: 500 });
     }
 
-    // 2. Fetch or Bootstrap Customer Dynamic Profile
+    // 2. Fetch or Bootstrap Customer Dynamic Profile using cleaned phone digits
     let { data: profile } = await supabase
       .from('customer_profiles')
       .select('*')
-      .eq('phone_number', incomingPhone)
+      .eq('phone_number', cleanedPhone)
       .maybeSingle();
 
     let replyText = '';
@@ -52,7 +55,7 @@ export async function POST(request: Request) {
         const extractedName = cleanedInput.replace(/my name is/i, '').trim();
         
         const { data: newProfile } = await supabase.from('customer_profiles').insert({
-          phone_number: incomingPhone,
+          phone_number: cleanedPhone,
           customer_name: extractedName,
           loyalty_points: 5,
           current_state: 'category_selection'
@@ -191,7 +194,6 @@ export async function POST(request: Request) {
   }
 }
 
-// Render dynamic interactive category options
 async function buildCategoryMenu(vendorId: string): Promise<string> {
   const { data: categories } = await supabase
     .from('menu_categories')
@@ -211,7 +213,6 @@ async function buildCategoryMenu(vendorId: string): Promise<string> {
   return text;
 }
 
-// Render items specific to chosen sub-category filter
 async function buildItemMenu(vendorId: string, categoryId: string, categoryName: string): Promise<string> {
   const { data: items } = await supabase
     .from('menu_items')
@@ -234,7 +235,6 @@ async function buildItemMenu(vendorId: string, categoryId: string, categoryName:
   return text;
 }
 
-// Format the structural checkout validation display block
 function buildCartReviewText(customerName: string, cart: any[]): string {
   let total = 0;
   let summary = `🛒 COCKED & LOADED CART // ${customerName.toUpperCase()}:\n\n`;
