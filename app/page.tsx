@@ -1,197 +1,192 @@
 'use client';
 
-import { useState } from 'react';
-import { supabase } from './utils/supabase';
+import { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
 
-const NENES_MENU = [
-  {
-    category: "Almighty Kota's",
-    items: [
-      { id: 'ak1', name: 'Almighty Burger with Rib and Bacon', price: 77, desc: 'Premium layers with signature sauce' },
-      { id: 'ak2', name: 'Almighty Burger with Rib and Footlong Russian', price: 79, desc: 'Massive local favorite stack' },
-      { id: 'ak3', name: 'Almighty Burger with Rib, Bacon and Footlong Russian', price: 93, desc: 'The ultimate loaded hunger buster' },
-    ]
-  },
-  {
-    category: "King Kota's",
-    items: [
-      { id: 'kk1', name: 'King Rib', price: 51, desc: 'Saucy rib patty inside a fresh loaf' },
-      { id: 'kk2', name: 'King Rib with Egg', price: 55, desc: 'Classic rib with a perfectly fried egg' },
-      { id: 'kk3', name: 'King Rib with Footlong', price: 69, desc: 'Rib patty paired with a footlong russian' },
-    ]
-  },
-  {
-    category: "Drinks",
-    items: [
-      { id: 'd1', name: 'Coca Cola', price: 18, desc: '330ml cold can' },
-      { id: 'd2', name: 'Fanta Orange', price: 18, desc: '330ml cold can' },
-    ]
-  }
-];
+const supabase = createClient(
+  'https://ctnmiwmiymzhsafwxnxw.supabase.co',
+  'sb_publishable_y0CVt3s9Psolebnf1SPRaA_TBI32jY7' // Safe public anon token
+);
 
-export default function NenesPortal() {
-  const [cart, setCart] = useState<{ [key: string]: number }>({});
-  const [loading, setLoading] = useState(false);
-  const [orderComplete, setOrderComplete] = useState(false);
+interface CartItem {
+  name: string;
+  price: number;
+  qty: number;
+}
+
+export default function MobileOrderApp() {
   const [customerName, setCustomerName] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [isRegistered, setIsRegistered] = useState(false);
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [activeCategory, setActiveCategory] = useState('almighty');
 
-  const updateQuantity = (id: string, delta: number) => {
-    setCart((prev) => {
-      const currentQty = prev[id] || 0;
-      const newQty = Math.max(0, currentQty + delta);
-      return { ...prev, [id]: newQty };
+  const menuItems = {
+    almighty: [
+      { id: 'ITEM_SPECIAL', name: 'Almighty Special', price: 65.00 },
+      { id: 'ITEM_FULLHOUSE', name: 'Full House Almighty', price: 85.00 }
+    ],
+    king: [
+      { id: 'ITEM_KINGRIB', name: 'King Rib Kota', price: 55.00 },
+      { id: 'ITEM_SOWETOBOSS', name: 'The Soweto Boss', price: 75.00 }
+    ],
+    drinks: [
+      { id: 'ITEM_COKE', name: 'Coca-Cola Can', price: 18.00 },
+      { id: 'ITEM_STONEY', name: 'Stoney Ginger Beer', price: 18.00 }
+    ]
+  };
+
+  // Hydrate user metadata locally on viewport boot
+  useEffect(() => {
+    const savedName = localStorage.getItem('kasicart_name');
+    const savedPhone = localStorage.getItem('kasicart_phone');
+    if (savedName && savedPhone) {
+      setCustomerName(savedName);
+      setPhoneNumber(savedPhone);
+      setIsRegistered(true);
+    }
+  }, []);
+
+  const handleRegistration = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!customerName || !phoneNumber) return;
+    localStorage.setItem('kasicart_name', customerName);
+    localStorage.setItem('kasicart_phone', phoneNumber);
+    setIsRegistered(true);
+  };
+
+  const addToCart = (name: string, price: number) => {
+    setCart((prevCart) => {
+      const existing = prevCart.find((item) => item.name === name);
+      if (existing) {
+        return prevCart.map((item) =>
+          item.name === name ? { ...item, qty: item.qty + 1 } : item
+        );
+      }
+      return [...prevCart, { name, price, qty: 1 }];
     });
   };
 
-  const totalPrice = NENES_MENU.reduce((sum, cat) => {
-    return sum + cat.items.reduce((catSum, item) => {
-      const qty = cart[item.id] || 0;
-      return catSum + item.price * qty;
-    }, 0);
-  }, 0);
+  const calculateTotal = () => {
+    return cart.reduce((total, item) => total + item.price * item.qty, 0);
+  };
 
-  const handleCheckout = async () => {
-    if (!customerName.trim()) {
-      alert('Please enter your name so the kitchen can call you when it is ready!');
-      return;
-    }
+  const executeCheckout = async () => {
+    if (cart.length === 0) return;
 
-    setLoading(true);
-
-    const orderItems: any[] = [];
-    NENES_MENU.forEach(cat => {
-      cat.items.forEach(item => {
-        if (cart[item.id] > 0) {
-          orderItems.push({ name: item.name, qty: cart[item.id], price: item.price });
-        }
+    try {
+      // Direct stream to 'orders' table. Chefs monitor board will update via Postgres Realtime loops.
+      const { error } = await supabase.from('orders').insert({
+        vendor_id: 'a7c92bdf-df83-4a12-8827-86d037a9cf5b', // Replace with your true explicit vendor UUID
+        customer_phone: `${customerName} (${phoneNumber})`,
+        status: 'incoming',
+        items_json: cart
       });
-    });
 
-    const { data: vendor } = await supabase
-      .from('vendors')
-      .select('id')
-      .eq('slug', 'nenes')
-      .single();
+      if (error) throw error;
 
-    if (!vendor) {
-      alert('Vendor setup configuration missing.');
-      setLoading(false);
-      return;
+      alert(`🚀 Order filed successfully for ${customerName}! Head to the counter when notified.`);
+      setCart([]);
+    } catch (err: any) {
+      console.error('Checkout error:', err.message);
     }
+  };
 
-    const { error } = await supabase
-      .from('orders')
-      .insert([
-        {
-          vendor_id: vendor.id,
-          customer_phone: customerName, 
-          items_json: orderItems,
-          total_amount: totalPrice,
-          payment_verified: true 
-        }
-      ]);
-
-    setLoading(false);
-
-    if (error) {
-      alert(`Database error: ${error.message}`);
-    } else {
-      const { data: rawOrder } = await supabase
-        .from('orders')
-        .select('id')
-        .eq('customer_phone', customerName)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
-
-      if (rawOrder) {
-        window.location.href = `/track?id=${rawOrder.id}`;
-      } else {
-        setOrderComplete(true);
-      }
-      setCart({});
-    }
-  }; // Fixed missing closing bracket here
-
-  if (orderComplete) {
+  if (!isRegistered) {
     return (
-      <div style={{ backgroundColor: '#F2C12E', minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px', textAlign: 'center', fontFamily: 'sans-serif' }}>
-        <div style={{ backgroundColor: '#FFF', border: '3px solid #111', borderRadius: '8px', padding: '30px', boxShadow: '4px 4px 0px #111', maxWidth: '400px' }}>
-          <h2 style={{ color: '#A61C1C', fontSize: '28px', fontWeight: '900', marginBottom: '10px' }}>🔥 ORDER SENT!</h2>
-          <p style={{ color: '#111', fontWeight: 'bold' }}>Thanks, {customerName}!</p>
-          <p style={{ color: '#555', fontSize: '14px', marginTop: '10px' }}>Keep an eye on the screen. The team will call out your name when your order is hot and ready.</p>
-          <button onClick={() => { setOrderComplete(false); setCustomerName(''); }} style={{ marginTop: '20px', backgroundColor: '#111', color: '#FFF', border: 'none', padding: '10px 20px', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}>
-            ORDER SOMETHING ELSE
-          </button>
+      <div className="min-h-screen bg-black text-white flex flex-col justify-center items-center p-6 font-sans">
+        <div className="w-full max-w-sm space-y-6">
+          <h1 className="text-3xl font-extrabold tracking-tight">🇿🇦 KasiCart</h1>
+          <p className="text-zinc-400 text-sm">Enter details to unlock Nenes Street Kitchen interactive menu panel.</p>
+          <form onSubmit={handleRegistration} className="space-y-4">
+            <input
+              type="text"
+              placeholder="Your Name"
+              value={customerName}
+              onChange={(e) => setCustomerName(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-800 p-4 rounded-xl text-white outline-none focus:border-orange-500"
+              required
+            />
+            <input
+              type="tel"
+              placeholder="Phone Number"
+              value={phoneNumber}
+              onChange={(e) => setPhoneNumber(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-800 p-4 rounded-xl text-white outline-none focus:border-orange-500"
+              required
+            />
+            <button type="submit" className="w-full bg-orange-600 font-bold p-4 rounded-xl hover:bg-orange-700 transition">
+              View Menu
+            </button>
+          </form>
         </div>
       </div>
     );
   }
 
   return (
-    <div style={{ backgroundColor: '#F2C12E', minHeight: '100vh', color: '#111', fontFamily: 'sans-serif', padding: '0 0 ' + (totalPrice > 0 ? '180px' : '40px') + ' 0' }}>
-      <div style={{ backgroundColor: '#A61C1C', padding: '30px 20px', textAlign: 'center', borderBottom: '6px solid #111' }}>
-        <h1 style={{ color: '#FFF', fontSize: '38px', fontWeight: '900', margin: 0, textTransform: 'uppercase' }}>nenes.</h1>
-        <div style={{ backgroundColor: '#FFF', color: '#A61C1C', display: 'inline-block', padding: '3px 12px', borderRadius: '20px', fontWeight: 'bold', fontSize: '12px', marginTop: '10px' }}>
-          ⚡ SKIP THE QUEUE // ORDER UPFRONT ⚡
+    <div className="min-h-screen bg-black text-white font-sans max-w-md mx-auto flex flex-col justify-between pb-24">
+      {/* Header Container Layout */}
+      <header className="p-6 border-b border-zinc-900 flex justify-between items-center">
+        <div>
+          <h2 className="text-xl font-bold tracking-tight">Nenes Street Kitchen</h2>
+          <p className="text-xs text-zinc-500">Welcome back, {customerName}</p>
         </div>
-      </div>
+        <button 
+          onClick={() => { localStorage.clear(); setIsRegistered(false); }} 
+          className="text-xs text-zinc-500 underline"
+        >
+          Reset Profile
+        </button>
+      </header>
 
-      <div style={{ padding: '20px', maxWidth: '600px', margin: '0 auto' }}>
-        <div style={{ backgroundColor: '#FFF', border: '3px solid #111', borderRadius: '8px', padding: '15px', marginBottom: '25px', boxShadow: '4px 4px 0px #111' }}>
-          <label style={{ display: 'block', fontWeight: '900', fontSize: '13px', marginBottom: '6px' }}>👤 ENTER YOUR NAME FOR THE ORDER:</label>
-          <input 
-            type="text" 
-            placeholder="e.g., Olwam" 
-            value={customerName} 
-            onChange={(e) => setCustomerName(e.target.value)}
-            style={{ width: '100%', padding: '10px', fontSize: '16px', borderRadius: '4px', border: '2px solid #111', fontWeight: 'bold' }}
-          />
-        </div>
-
-        {NENES_MENU.map((cat) => (
-          <div key={cat.category} style={{ marginBottom: '30px' }}>
-            <h2 style={{ backgroundColor: '#A61C1C', color: '#FFF', padding: '6px 12px', fontSize: '16px', fontWeight: 'bold', display: 'inline-block', marginBottom: '15px', border: '2px solid #111', boxShadow: '2px 2px 0px #111' }}>
-              {cat.category.toUpperCase()}
-            </h2>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-              {cat.items.map((item) => {
-                const qty = cart[item.id] || 0;
-                return (
-                  <div key={item.id} style={{ backgroundColor: '#FFF', border: '3px solid #111', borderRadius: '8px', padding: '15px', boxShadow: '4px 4px 0px #111', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ flex: 1, paddingRight: '15px' }}>
-                      <h3 style={{ fontSize: '15px', fontWeight: '800' }}>{item.name}</h3>
-                      <span style={{ color: '#A61C1C', fontWeight: '900', display: 'block', marginTop: '4px' }}>R {item.price}</span>
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#111', borderRadius: '6px', padding: '4px' }}>
-                      <button onClick={() => updateQuantity(item.id, -1)} style={{ backgroundColor: '#111', color: '#FFF', border: 'none', width: '30px', height: '30px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}>-</button>
-                      <span style={{ color: '#FFF', fontSize: '13px', fontWeight: 'bold', minWidth: '24px', textAlign: 'center' }}>{qty}</span>
-                      <button onClick={() => updateQuantity(item.id, 1)} style={{ backgroundColor: '#111', color: '#F2C12E', border: 'none', width: '30px', height: '30px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}>+</button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+      {/* Category Tab Segment Filters */}
+      <div className="grid grid-cols-3 gap-2 p-4">
+        {['almighty', 'king', 'drinks'].map((cat) => (
+          <button
+            key={cat}
+            onClick={() => setActiveCategory(cat)}
+            className={`p-3 rounded-xl font-bold capitalize text-sm transition ${
+              activeCategory === cat ? 'bg-orange-600 text-white' : 'bg-zinc-900 text-zinc-400'
+            }`}
+          >
+            {cat}
+          </button>
         ))}
       </div>
 
-      {totalPrice > 0 && (
-        <footer style={{ position: 'fixed', bottom: 0, left: 0, right: 0, backgroundColor: '#111', borderTop: '4px solid #A61C1C', padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 100 }}>
-          <div>
-            <span style={{ color: '#F2C12E', fontSize: '11px', fontWeight: 'bold', display: 'block' }}>TOTAL ORDER DUE</span>
-            <span style={{ fontSize: '24px', fontWeight: '900', color: '#FFF' }}>R {totalPrice}</span>
+      {/* Dynamic Item Card Stream layout */}
+      <main className="flex-1 p-4 space-y-3 overflow-y-auto">
+        {menuItems[activeCategory as keyof typeof menuItems].map((item) => (
+          <div key={item.id} className="bg-zinc-900 p-4 rounded-2xl flex justify-between items-center border border-zinc-900">
+            <div>
+              <h3 className="font-bold text-base">{item.name}</h3>
+              <p className="text-orange-500 font-semibold text-sm">R {item.price.toFixed(2)}</p>
+            </div>
+            <button
+              onClick={() => addToCart(item.name, item.price)}
+              className="bg-zinc-800 text-white font-extrabold w-10 h-10 rounded-xl flex items-center justify-center hover:bg-zinc-700 transition"
+            >
+              +
+            </button>
           </div>
-          <button 
-            onClick={handleCheckout}
-            disabled={loading}
-            style={{ backgroundColor: loading ? '#555' : '#A61C1C', color: '#FFF', border: '2px solid #FFF', padding: '12px 24px', borderRadius: '6px', fontSize: '14px', fontWeight: '900', cursor: 'pointer' }}
+        ))}
+      </main>
+
+      {/* Bottom Cart Drawer Layout Component Overlay */}
+      {cart.length > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-zinc-900 p-4 border-t border-zinc-800 rounded-t-3xl shadow-2xl space-y-4">
+          <div className="flex justify-between items-center text-sm px-2 text-zinc-400">
+            <span>Items in cart: {cart.reduce((a, b) => a + b.qty, 0)}</span>
+            <span className="text-white font-bold text-base">Total: R {calculateTotal().toFixed(2)}</span>
+          </div>
+          <button
+            onClick={executeCheckout}
+            className="w-full bg-orange-600 text-white font-extrabold p-4 rounded-2xl text-center shadow-lg hover:bg-orange-700 transition"
           >
-            {loading ? 'SENDING ORDER...' : 'PLACE ORDER & PAY'}
+            Checkout Now 🛒
           </button>
-        </footer>
+        </div>
       )}
     </div>
   );
