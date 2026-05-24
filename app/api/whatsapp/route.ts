@@ -3,114 +3,98 @@ import { supabase } from '../../utils/supabase';
 
 export async function POST(request: Request) {
   try {
-    // 1. Capture the incoming data package from the WhatsApp network
-    const contentType = request.headers.get('content-type') || '';
-    let bodyText = '';
+    let incomingPhone = '';
     let incomingMessage = '';
-    let customerPhone = '';
 
-    // WhatsApp gateways usually send data as URL-encoded forms
-    if (contentType.includes('application/x-www-form-urlencoded')) {
-      const formData = await request.formData();
-      incomingMessage = formData.get('Body')?.toString().trim() || '';
-      customerPhone = formData.get('From')?.toString().trim() || ''; // e.g., "whatsapp:+27712345678"
+    const contentType = request.headers.get('content-type') || '';
+
+    // 1. Parse inbound layout smartly based on content format
+    if (contentType.includes('application/json')) {
+      const body = await request.json();
+      incomingPhone = body.phone || '';
+      incomingMessage = body.message || '';
     } else {
-      // Fallback for raw JSON testing
-      const json = await request.json();
-      incomingMessage = json.message || '';
-      customerPhone = json.phone || '';
+      // Handles real incoming Twilio production form data payloads
+      const formData = await request.formData();
+      incomingPhone = formData.get('From')?.toString() || ''; // Looks like "whatsapp:+2781..."
+      incomingMessage = formData.get('Body')?.toString() || '';
+      
+      // Strip the prefix if Twilio sends it with the wire string
+      incomingPhone = incomingPhone.replace('whatsapp:', '').trim();
     }
 
-    if (!customerPhone) {
-      return NextResponse.json({ error: 'Missing phone endpoint token' }, { status: 400 });
+    if (!incomingPhone || !incomingMessage) {
+      return new Response('Missing transmission payloads', { status: 400 });
     }
 
-    // Clean up the phone string for cleaner database matching
-    const cleanPhone = customerPhone.replace('whatsapp:', '');
-
-    // 2. Check if this profile already exists in our loyalty memory bank
+    // 2. Query Memory Matrix for Customer Record via Supabase
     const { data: profile } = await supabase
       .from('customer_profiles')
       .select('*')
-      .eq('phone_number', cleanPhone)
+      .eq('phone_number', incomingPhone)
       .maybeSingle();
 
     let replyText = '';
 
-    // CASE 1: Brand New User (First time texting the bot)
     if (!profile) {
-      // Split strings to parse if they are sending their name
-      if (incomingMessage.toLowerCase().startsWith('my name is ')) {
-        const extractedName = incomingMessage.substring(11).trim();
-
-        // Save them permanently into the profile bank
-        await supabase
-          .from('customer_profiles')
-          .insert([{ phone_number: cleanPhone, customer_name: extractedName, total_points: 10 }]);
-
-        replyText = `🔥 Perfect, ${extractedName}! You've been registered to Nenes Orders. You just earned *10 Loyalty Points*!\n\nReply with *MENU* to see what's cooking today.`;
-      } else {
-        replyText = `👋 Yo! Welcome to the Nenes Street Kitchen bot.\n\nI don't have your number saved yet. Reply with *My name is [Your Name]* so the kitchen knows who to call! (e.g., *My name is Olwam*)`;
-      }
-    } 
-    
-    // CASE 2: Returning User
-    else {
-      const userText = incomingMessage.toLowerCase();
-
-      if (userText === 'menu' || userText === 'hi' || userText === 'hey') {
-        replyText = `🔥 Welcome back, ${profile.customer_name}!\n⭐ Balance: *${profile.total_points} Points*\n\nWhat are we smashing today?\n\n*1* 👉 Almighty Burger with Rib & Bacon (R77)\n*2* 👉 Almighty Burger with Rib & Footlong Russian (R79)\n*3* 👉 King Rib Kota (R51)\n\nReply with the *Number* of the item you want to order!`;
-      } else if (userText === '1' || userText === '2' || userText === '3') {
-        // Map selection options to database products
-        let itemName = 'Almighty Burger with Rib and Bacon';
-        let itemPrice = 77;
+      // State A: Unregistered Number Processing
+      if (incomingMessage.toLowerCase().startsWith('my name is')) {
+        const extractedName = incomingMessage.replace(/my name is/i, '').trim();
         
-        if (userText === '2') {
-          itemName = 'Almighty Burger with Rib and Footlong Russian';
-          itemPrice = 79;
-        } else if (userText === '3') {
-          itemName = 'King Rib';
-          itemPrice = 51;
-        }
+        await supabase.from('customer_profiles').insert({
+          phone_number: incomingPhone,
+          customer_name: extractedName,
+          loyalty_points: 5
+        });
 
-        // Get Nenes Vendor ID
-        const { data: vendor } = await supabase.from('vendors').select('id').eq('slug', 'nenes').single();
-
-        if (vendor) {
-          // Push the order directly into the cloud orders table
-          const { data: newOrder } = await supabase
-            .from('orders')
-            .insert([
-              {
-                vendor_id: vendor.id,
-                customer_phone: profile.customer_name, // Map name straight to dashboard rendering layout
-                items_json: [{ name: itemName, qty: 1, price: itemPrice }],
-                total_amount: itemPrice,
-                payment_verified: true
-              }
-            ])
-            .select()
-            .single();
-
-          // Reward loyalty stack points
-          await supabase
-            .from('customer_profiles')
-            .update({ total_points: profile.total_points + 10 })
-            .eq('phone_number', cleanPhone);
-
-          replyText = `🚀 ORDER FIRED UP, ${profile.customer_name.toUpperCase()}!\n\n🍔 *1x ${itemName}*\n💰 Total Due: *R${itemPrice}*\n⭐ +10 Points Added!\n\nThe kitchen just caught it. I'll ping you here the exact second it's on the grill!`;
-        } else {
-          replyText = `⚠️ System sync error. Try again later.`;
-        }
+        replyText = `✨ Sho, ${extractedName}! Account verified. You've been loaded with 5 Loyalty Points! 🎉\n\nReply with "1" to look at the Nenes Kitchen Menu and place an order.`;
       } else {
-        replyText = `🤖 Code not recognized, ${profile.customer_name}.\n\nReply with *MENU* to view the current food list, or reply with *1*, *2*, or *3* to place an order instantly.`;
+        replyText = `🇿🇦 Yo! Welcome to KasiCart // Nenes Street Kitchen!\n\nWe don't have your number registered yet.\n\nTo setup your profile instantly, reply with:\n"My name is [Your Name]"`;
+      }
+    } else {
+      // State B: Registered Operational User Flow Engine
+      if (incomingMessage.trim() === '1') {
+        const { data: vendor } = await supabase
+          .from('vendors')
+          .select('id')
+          .eq('slug', 'nenes')
+          .single();
+        
+        // TypeScript safety net: block execution if vendor table doesn't return data
+        if (!vendor) {
+          return new Response(
+            `<?xml version="1.0" encoding="UTF-8"?><Response><Message>Store configuration error. Please try again later.</Message></Response>`, 
+            { headers: { 'Content-Type': 'text/xml' }, status: 200 }
+          );
+        }
+
+        // Inject a simulated order record directly into the live kitchen stream
+        await supabase.from('orders').insert({
+          vendor_id: vendor.id,
+          customer_phone: profile.customer_name, // Maps profile name straight to card header
+          status: 'incoming',
+          items_json: [{ name: "Almighty Burger with Rib & Bacon", qty: 1 }]
+        });
+
+        replyText = `🍔 ORDER FIRED UP, ${profile.customer_name.toUpperCase()}!\n\nOur chefs just received your order for 1x Almighty Burger.\n\nKeep this chat open—we will text you the exact second it hits the grill! 🔥`;
+      } else {
+        replyText = `Yo ${profile.customer_name}! Reply with "1" to instantly order the Nenes Almighty Burger special right now! 📢`;
       }
     }
 
-    // 3. Return response back to WhatsApp Gateway integration provider
-    return NextResponse.json({ reply: replyText });
+    // 3. Compile structural TwiML XML response so Twilio reads it perfectly
+    const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+    <Response>
+        <Message>${replyText}</Message>
+    </Response>`;
+
+    return new Response(twimlResponse, {
+      headers: { 'Content-Type': 'text/xml' },
+      status: 200
+    });
 
   } catch (err: any) {
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    console.error("Critical Webhook Pipeline Failure:", err.message);
+    return new Response('Internal Webhook Error', { status: 500 });
   }
 }
